@@ -1,0 +1,8 @@
+# Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*~
+
+# macOS Finder metadata
+.DS_Store

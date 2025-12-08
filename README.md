@@ -26,7 +26,7 @@ The main entry point is `main.py`. You can generate plots directly from the comm
 | `--plots` | Types of plots: `1d`, `2d`, `ratio` (Data/MC), or `all` | No | `all` |
 | `--vars` | Variables to plot in 1D mode (must be in config) | No | `rjr_Ms`, `rjr_Rs` |
 | `--output` | Output filename (for ROOT) or directory (for PDF/PNG) | No | `standard_plots.root` |
-| `--format` | Output format: `root`, `pdf`, `png` | No | `root` |
+| `--format` | Output format: `root`, `pdf`, `png`, `eps` | No | `root` |
 | `--lumi` | Integrated luminosity in fb⁻¹ | No | 400.0 |
 | `--normalize` | Normalize 1D plots to unit area | No | False |
 | `--unblind` | **WARNING**: Bypass blinding to show data in signal regions | No | False |

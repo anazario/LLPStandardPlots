@@ -108,6 +108,8 @@ class SelectionManager:
             "hlt_flags" 
             # Add other boolean flags here if they are single branches
         ]
+        # HLT fallback expression
+        self.hlt_fallback_expression = "(Trigger_PFMET120_PFMHT120_IDTight || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight || Trigger_PFMET120_PFMHT120_IDTight_PFHT60 || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60)"
 
     def get_combined_selection_string(self, final_state_flag: str = None):
         """Returns a string representation of cuts for uproot.filter/cut."""

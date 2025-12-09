@@ -197,7 +197,7 @@ def parse_arguments():
     ], help='List of Final State Flags or custom cut strings to process')
     
     # Plot Types
-    parser.add_argument('--plots', nargs='+', choices=['1d', '2d', 'ratio', 'all'], default=['all'],
+    parser.add_argument('--plots', nargs='+', choices=['1d', '2d', 'ratio', 'unrolled', 'all'], default=['all'],
                        help='Types of plots to generate')
     
     # 1D Options
@@ -208,6 +208,7 @@ def parse_arguments():
     # Analysis Options
     parser.add_argument('--lumi', type=float, default=400.0, help='Integrated luminosity in fb^-1 (default: 400)')
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
+    
     
     # Output Format Options
     parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root', 
@@ -281,6 +282,9 @@ def main():
     if data_files:
         data_data_map, custom_data_data_map = loader.load_data_unified(data_files, event_flags, custom_cuts, is_data=True)
     
+    # Print comprehensive data loading summary
+    loader.print_comprehensive_summary()
+    
     # Output File (only for ROOT format)
     if use_root_file:
         f_out = ROOT.TFile(output_path, "RECREATE")
@@ -345,6 +349,18 @@ def main():
         
         # Data is already assigned above
         current_bg_combined = loader.combine_data(current_bg_data)
+
+        # Get corresponding data for this flag/cut
+        if item['data_source'] == 'event_flag':
+            current_data_data = data_data_map.get(flag, {})
+        else:
+            # For custom cuts, find the matching region
+            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
+            if custom_region_idx >= 0:
+                custom_region_name = list(custom_data_data_map.keys())[custom_region_idx]
+                current_data_data = custom_data_data_map.get(custom_region_name, {})
+            else:
+                current_data_data = {}
         
         # --- Data/MC Comparison Plots (FIRST to avoid palette interference) ---
         if args.data and ('ratio' in args.plots or 'all' in args.plots):
@@ -354,18 +370,6 @@ def main():
             if use_root_file:
                 datamc_dir = fs_dir.mkdir("datamc_plots")
                 datamc_dir.cd()
-            
-            # Get corresponding data for this flag/cut
-            if item['data_source'] == 'event_flag':
-                current_data_data = data_data_map.get(flag, {})
-            else:
-                # For custom cuts, find the matching region
-                custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
-                if custom_region_idx >= 0:
-                    custom_region_name = list(custom_data_data_map.keys())[custom_region_idx]
-                    current_data_data = custom_data_data_map.get(custom_region_name, {})
-                else:
-                    current_data_data = {}
             
             # Check if we should blind data in signal regions or custom cuts
             if args.unblind:
@@ -455,6 +459,59 @@ def main():
                 if use_root_file:
                     fs_dir.cd()
         
+        # --- Unrolled Plots ---
+        if ('unrolled' in args.plots or 'all' in args.plots) and current_bg_data:
+            print(f"  Generating Unrolled Plots (both merged_rs and merged_ms)...")
+            unrolled_subdir = f"{folder_name}/unrolled_plots"
+            unrolled_norm_subdir = f"{folder_name}/unrolled_plots_norm"
+            
+            # Check blinding
+            if args.unblind:
+                blind_data = False
+            else:
+                blind_data = is_signal_region(flag) or item['data_source'] == 'custom_cut'
+
+            # Generate both schemes
+            for scheme in ['merged_rs', 'merged_ms']:
+                print(f"    Creating {scheme} plots...")
+                
+                # 1. Standard Unrolled
+                if use_root_file:
+                    u_dir = fs_dir.mkdir("unrolled_plots")
+                    u_dir.cd()
+
+                canvas = plotter_datamc.create_unrolled_comparison(
+                    current_data_data, current_bg_data, 
+                    scheme=scheme, 
+                    blind_data=blind_data, 
+                    final_state_label=fs_label_latex, 
+                    suffix=f"{flag}_{scheme}", 
+                    normalized=False
+                )
+                save_canvas(canvas, output_format, f_out, output_dir, unrolled_subdir)
+                
+                if use_root_file:
+                    fs_dir.cd()
+
+                # 2. Normalized Unrolled (if requested via --normalize)
+                if args.normalize:
+                    if use_root_file:
+                        u_norm_dir = fs_dir.mkdir("unrolled_plots_norm")
+                        u_norm_dir.cd()
+                        
+                    canvas_norm = plotter_datamc.create_unrolled_comparison(
+                        current_data_data, current_bg_data, 
+                        scheme=scheme, 
+                        blind_data=blind_data, 
+                        final_state_label=fs_label_latex, 
+                        suffix=f"{flag}_{scheme}", 
+                        normalized=True
+                    )
+                    save_canvas(canvas_norm, output_format, f_out, output_dir, unrolled_norm_subdir)
+                    
+                    if use_root_file:
+                        fs_dir.cd()
+
         # --- 2D Plots ---
         if '2d' in args.plots or 'all' in args.plots:
             print("  Generating 2D Plots...")

@@ -125,18 +125,18 @@ class StyleManager:
             main_latex.DrawLatex(x_pos, y_pos, main_text)
             
             # Calculate position for \\ell\\ell using plot-type-specific offsets
+            ell_y_offset = -0.014
+            ell_size_offset = -0.013
             if plot_type == "1d":
                 ell_x_offset = 0.14
-                ell_y_offset = -0.014
-                ell_size_offset = -0.013
             elif plot_type == "2d":
                 ell_x_offset = 0.135 
-                ell_y_offset = -0.014
-                ell_size_offset = -0.013
             elif plot_type == "datamc":
                 ell_x_offset = 0.122  # Adjust for data/MC plot layout
-                ell_y_offset = -0.014
-                ell_size_offset = -0.013
+            elif plot_type == "unrolled":
+                ell_x_offset = 0.105
+                ell_y_offset = -0.02
+                
             else:  # default
                 ell_x_offset = 0.126
                 ell_y_offset = -0.014

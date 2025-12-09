@@ -8,11 +8,48 @@ class DataLoader:
         self.tree_name = tree_name
         self.luminosity = luminosity
         self.selection_manager = SelectionManager()
+        self.loading_summary = {
+            'data_types_loaded': set(),
+            'event_flags': set(),
+            'custom_cuts': set(),
+            'files_processed': 0
+        }
+
+    def _track_loading(self, event_flags=None, custom_cuts=None, is_data=False, file_count=0):
+        """Track what's being loaded for comprehensive summary."""
+        self.loading_summary['data_types_loaded'].add('Data' if is_data else 'MC')
+        if event_flags:
+            self.loading_summary['event_flags'].update(event_flags)
+        if custom_cuts:
+            self.loading_summary['custom_cuts'].update(custom_cuts)
+        self.loading_summary['files_processed'] += file_count
+    
+    def print_comprehensive_summary(self):
+        """Print comprehensive summary after all loading is complete."""
+        print(f"\n🎨 DATA LOADER SUMMARY:")
+        print("=" * 60)
+        print(f"    • Luminosity: {self.luminosity:.1f} fb⁻¹")
+        print(f"    • Tree name: {self.tree_name}")
+        print(f"    • Data types loaded: {', '.join(sorted(self.loading_summary['data_types_loaded']))}")
+        print(f"    • Files processed: {self.loading_summary['files_processed']}")
+        
+        # Show baseline cuts
+        baseline_cuts = []
+        baseline_cuts.extend(self.selection_manager.common_cuts)
+        baseline_cuts.extend([f"({flag} == 1)" for flag in self.selection_manager.flags])
+        print(f"    • Baseline cuts: {', '.join(baseline_cuts)}")
+        
+        if self.loading_summary['event_flags']:
+            print(f"    • Event flags: {', '.join(sorted(self.loading_summary['event_flags']))}")
+        if self.loading_summary['custom_cuts']:
+            print(f"    • Custom cuts: {', '.join(sorted(self.loading_summary['custom_cuts']))}")
+        print("=" * 60)
 
     def load_data(self, file_paths, final_state_flags):
         """
         Loads data for multiple files and multiple final states.
         """
+        self._track_loading(event_flags=final_state_flags, file_count=len(file_paths))
         # branches to load
         branches = [
             'rjr_Ms', 'rjr_Rs', 'evtFillWgt', 'SV_nHadronic', 
@@ -51,6 +88,14 @@ class DataLoader:
                     for flag in self.selection_manager.flags:
                         if flag in data:
                             base_mask &= (data[flag] == 1)
+                        elif flag == 'hlt_flags':
+                            # Try fallback expression for HLT flags
+                            try:
+                                hlt_mask = self._apply_hlt_fallback(tree)
+                                base_mask &= hlt_mask
+                            except Exception:
+                                print(f"  Warning: High-Level Trigger (HLT) not found")
+                        # No warning for other missing flags to keep output clean
                     
                     for fs_flag in final_state_flags:
                         if fs_flag not in data:
@@ -96,6 +141,31 @@ class DataLoader:
                 
         return all_data
 
+    def _apply_hlt_fallback(self, tree):
+        """Apply HLT fallback using individual trigger branches."""
+        try:
+            # Load individual trigger branches
+            trigger_branches = [
+                'Trigger_PFMET120_PFMHT120_IDTight',
+                'Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight', 
+                'Trigger_PFMET120_PFMHT120_IDTight_PFHT60',
+                'Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60'
+            ]
+            
+            # Load the trigger data
+            trigger_data = tree.arrays(trigger_branches, library='np')
+            
+            # Apply OR logic: any trigger passes
+            hlt_mask = np.zeros(len(trigger_data[trigger_branches[0]]), dtype=bool)
+            for branch in trigger_branches:
+                if branch in trigger_data:
+                    hlt_mask |= (trigger_data[branch] == 1)
+            
+            return hlt_mask
+            
+        except Exception as e:
+            raise Exception(f"HLT fallback failed: {e}")
+
     def load_data_unified(self, file_paths, event_flags, custom_cuts, is_data=False):
         """
         Unified loader that handles both event flags and custom cuts in one pass.
@@ -103,6 +173,7 @@ class DataLoader:
             is_data: If True, treat as data files (no MC scaling)
         Returns: (event_flag_data, custom_cut_data)
         """
+        self._track_loading(event_flags=event_flags, custom_cuts=custom_cuts, is_data=is_data, file_count=len(file_paths))
         # branches to load
         branches = [
             'rjr_Ms', 'rjr_Rs', 'evtFillWgt', 'SV_nHadronic', 

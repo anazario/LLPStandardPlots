@@ -41,6 +41,7 @@ class PlotterBase:
             'had_povere': 'HadronicSV_pOverE',
             'had_decayangle': 'HadronicSV_decayAngle',
             'had_costheta': 'HadronicSV_cosTheta',
+            'ntracks': 'HadronicSV_nTracks',
             'lep_mass': 'LeptonicSV_mass',
             'lep_dxy': 'LeptonicSV_dxy',
             'lep_dxysig': 'LeptonicSV_dxySig', 
@@ -370,6 +371,33 @@ class PlotterDataMC(PlotterBase):
         
         return mc_uncertainty
     
+    def _create_mc_ratio_uncertainty_band(self, total_mc_hist):
+        """Create MC uncertainty band for ratio plots (fractional uncertainty around y=1)."""
+        if not total_mc_hist:
+            return None
+            
+        mc_ratio_uncertainty = total_mc_hist.Clone("mc_ratio_uncertainty")
+        for i in range(1, mc_ratio_uncertainty.GetNbinsX() + 1):
+            mc_value = total_mc_hist.GetBinContent(i)
+            mc_error = total_mc_hist.GetBinError(i)
+            if mc_value > 0:
+                # Set bin content to 1 (center line) and error to fractional uncertainty
+                mc_ratio_uncertainty.SetBinContent(i, 1.0)
+                mc_ratio_uncertainty.SetBinError(i, mc_error / mc_value)
+            else:
+                mc_ratio_uncertainty.SetBinContent(i, 1.0)
+                mc_ratio_uncertainty.SetBinError(i, 0.0)
+            
+        # Style the MC uncertainty band in ratio plot
+        mc_ratio_uncertainty.SetFillStyle(3244)
+        mc_ratio_uncertainty.SetFillColor(ROOT.kBlack)
+        mc_ratio_uncertainty.SetLineColor(ROOT.kBlack)
+        mc_ratio_uncertainty.SetLineWidth(1)
+        mc_ratio_uncertainty.SetMarkerSize(0)
+        mc_ratio_uncertainty.SetMarkerStyle(0)
+        
+        return mc_ratio_uncertainty
+    
     def _create_standard_legend(self, data_hist, mc_uncertainty, mc_histograms, x1=0.77, x2=1., y1=0.4, y2=0.9, text_size=0.05):
         """Create legend with existing data/MC ordering and styling."""
         legend = CMS.cmsLeg(x1, y1, x2, y2, textSize=text_size)
@@ -549,7 +577,7 @@ class PlotterDataMC(PlotterBase):
             clean_var = re.sub(r'\s*\[.*?\]', '', var_label).strip()
             y_axis_title = f"#frac{{1}}{{N}}  #frac{{dN}}{{d({clean_var})}}"
         else:
-            y_axis_title = "Events"
+            y_axis_title = "number of events"
             
         stack.GetYaxis().SetTitle(y_axis_title)
         stack.GetYaxis().SetTitleSize(0.06)
@@ -614,7 +642,14 @@ class PlotterDataMC(PlotterBase):
             ratio_hist.GetYaxis().SetNdivisions(505)
             ratio_hist.GetXaxis().CenterTitle(True)
             ratio_hist.GetYaxis().CenterTitle(True)
+            
+            # Draw ratio histogram first to establish axis formatting
             ratio_hist.Draw("PEX0")
+            
+            # Create and draw MC uncertainty band for ratio plot
+            mc_ratio_uncertainty = self._create_mc_ratio_uncertainty_band(total_mc_hist)
+            if mc_ratio_uncertainty:
+                mc_ratio_uncertainty.Draw("E2 SAME")
             
             # Reference line at 1
             x_min_ratio = ratio_hist.GetXaxis().GetXmin()
@@ -626,6 +661,7 @@ class PlotterDataMC(PlotterBase):
             # Keep objects alive
             canvas.ratio_hist = ratio_hist
             canvas.total_mc_hist = total_mc_hist
+            canvas.mc_ratio_uncertainty = mc_ratio_uncertainty
             canvas.line = line
 
         pad1.SetFixedAspectRatio()
@@ -978,7 +1014,13 @@ class PlotterDataMC(PlotterBase):
             ax.SetTitleSize(0.18)
             ax.SetTitleOffset(1.)
             
+            # Draw ratio histogram first to establish axis formatting
             ratio_hist.Draw("PEX0")
+            
+            # Create and draw MC uncertainty band for ratio plot
+            mc_ratio_uncertainty = self._create_mc_ratio_uncertainty_band(total_mc_hist)
+            if mc_ratio_uncertainty:
+                mc_ratio_uncertainty.Draw("E2 SAME")
             
             # Force update to apply text changes
             pad2.Modified()
@@ -997,6 +1039,7 @@ class PlotterDataMC(PlotterBase):
         if data_hist:
             # Keep objects
             canvas.ratio_hist = ratio_hist
+            canvas.mc_ratio_uncertainty = mc_ratio_uncertainty
             canvas.ratio_lines = ratio_lines
             canvas.line = line
 

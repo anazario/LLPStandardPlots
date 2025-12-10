@@ -57,6 +57,7 @@ class DataLoader:
             # SV variables for data/MC comparisons
             'HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
             'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
+            'HadronicSV_nTracks',
             'LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
             'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta'
         ]
@@ -181,6 +182,7 @@ class DataLoader:
             # SV variables for data/MC comparisons
             'HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
             'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
+            'HadronicSV_nTracks',
             'LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
             'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta'
         ]

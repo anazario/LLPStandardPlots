@@ -23,7 +23,7 @@ The main entry point is `main.py`. You can generate plots directly from the comm
 | `--background` | List of background ROOT files | Yes | - |
 | `--data` | List of data ROOT files (for Data/MC plots) | No | - |
 | `--flags` | List of selection flags (e.g., `passNHad1SelectionSRTight`) or custom cut strings | No | Tight selections |
-| `--plots` | Types of plots: `1d`, `2d`, `ratio` (Data/MC), or `all` | No | `all` |
+| `--plots` | Types of plots: `1d`, `2d`, `ratio`, `unrolled`, or `all` | No | `all` |
 | `--vars` | Variables to plot in 1D mode (must be in config) | No | `rjr_Ms`, `rjr_Rs` |
 | `--output` | Output filename (for ROOT) or directory (for PDF/PNG) | No | `standard_plots.root` |
 | `--format` | Output format: `root`, `pdf`, `png`, `eps` | No | `root` |
@@ -115,12 +115,15 @@ class AnalysisConfig:
 ## Project Structure
 
 ```
-├── main.py              # CLI Entry point
+├── main.py                    # Main CLI Entry point
 ├── src/
-│   ├── config.py        # Central configuration (variables, bins)
-│   ├── loader.py        # Data loading logic (Uproot -> NumPy)
-│   ├── plotter.py       # Plotting classes (1D, 2D, Data/MC)
-│   ├── style.py         # Style management (cmsstyle wrapper)
-│   ├── selections.py    # Selection definitions and helpers
-│   └── utils.py         # Helper functions (name parsing)
+│   ├── config.py              # Central configuration (variables, bins)
+│   ├── loader.py              # Data loading logic (Uproot -> NumPy)
+│   ├── plotter.py             # Plotting classes (1D, 2D, Data/MC, Unrolled)
+│   ├── style.py               # Style management (cmsstyle wrapper)
+│   ├── selections.py          # Selection definitions and helpers
+│   ├── unrolled.py            # Unrolled binning mathematics
+│   └── utils.py               # Helper functions (name parsing)
+└── tools/
+    └── eps_to_pdf.py          # Helper to convert EPS plots to PDF
 ```

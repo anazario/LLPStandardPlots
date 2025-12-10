@@ -107,13 +107,21 @@ class StyleManager:
     
     def draw_region_label(self, canvas, label, x_pos, y_pos, textsize, plot_type="default"):
         """
-        Draw region label with proper handling of \\ell\\ell symbols.
+        Draw region label with proper handling of \\ell\\ell and hh symbols.
         plot_type: "1d", "2d", "datamc", or "default"
         Returns latex objects to keep alive.
         """
-        if "\\ell\\ell" in label:
-            # Split approach: draw main label with placeholder, then overlay \\ell\\ell
-            main_label = label.replace("\\ell\\ell", "  ")  # Two spaces as placeholder
+        # Check if we need TMathText rendering for any symbols
+        has_ell = "\\ell\\ell" in label
+        has_hh = "hh" in label
+        
+        if has_ell or has_hh:
+            # Split approach: draw main label with placeholders, then overlay symbols
+            main_label = label
+            if has_ell:
+                main_label = main_label.replace("\\ell\\ell", "  ")
+            if has_hh:
+                main_label = main_label.replace("hh", "  ")
             
             # Draw main label
             main_latex = ROOT.TLatex()
@@ -124,38 +132,47 @@ class StyleManager:
             main_text = f"Region: {main_label}"
             main_latex.DrawLatex(x_pos, y_pos, main_text)
             
-            # Calculate position for \\ell\\ell using plot-type-specific offsets
-            ell_y_offset = -0.014
-            ell_size_offset = -0.013
+            latex_objects = [main_latex]
+            
+            # Calculate position offsets for symbols using plot-type-specific values
+            y_offset = -0.014
+            size_offset = -0.013
             if plot_type == "1d":
-                ell_x_offset = 0.14
+                x_offset = 0.14
             elif plot_type == "2d":
-                ell_x_offset = 0.135 
+                x_offset = 0.135 
             elif plot_type == "datamc":
-                ell_x_offset = 0.122  # Adjust for data/MC plot layout
+                x_offset = 0.122
+                size_offset = -0.018
             elif plot_type == "unrolled":
-                ell_x_offset = 0.105
-                ell_y_offset = -0.02
-                
+                x_offset = 0.108
+                y_offset = -0.018
+                size_offset = -0.022
             else:  # default
-                ell_x_offset = 0.126
-                ell_y_offset = -0.014
-                ell_size_offset = -0.013
-                
-            ell_x_pos = x_pos + ell_x_offset
-            ell_y_pos = y_pos + ell_y_offset
-            ell_textsize = textsize + ell_size_offset
+                x_offset = 0.126
             
-            # Draw \\ell\\ell with TMathText for proper italic rendering
-            ell_latex = ROOT.TMathText()
-            ell_latex.SetNDC() 
-            ell_latex.SetTextSize(ell_textsize)
-            ell_latex.DrawMathText(ell_x_pos, ell_y_pos, "\\ell\\ell")
-            ell_latex.Paint()
+            # Draw symbols with TMathText
+            if has_ell:
+                ell_latex = ROOT.TMathText()
+                ell_latex.SetNDC() 
+                ell_latex.SetTextSize(textsize + size_offset)
+                ell_latex.DrawMathText(x_pos + x_offset, y_pos + y_offset, "\\ell\\ell")
+                ell_latex.Paint()
+                latex_objects.append(ell_latex)
             
-            return [main_latex, ell_latex]  # Return both objects to keep alive
+            if has_hh:
+                hh_latex = ROOT.TMathText()
+                hh_latex.SetNDC() 
+                hh_latex.SetTextSize(textsize + size_offset)
+                # Adjust x position if both symbols are present
+                hh_x_offset = x_offset + (0.04 if has_ell else 0)
+                hh_latex.DrawMathText(x_pos + hh_x_offset, y_pos + y_offset, "q\\bar{q}")
+                hh_latex.Paint()
+                latex_objects.append(hh_latex)
+            
+            return latex_objects
         else:
-            # Simple case: no \\ell symbols
+            # Simple case: no special symbols
             fs_latex = ROOT.TLatex()
             fs_latex.SetNDC()
             fs_latex.SetTextSize(textsize)

@@ -75,6 +75,14 @@ class AnalysisConfig:
             'scale': 1.0,
             'is_vector': True
         },
+         'HadronicSV_nTracks': {
+            'name': 'ntracks',
+            'label': 'N_{tracks}',
+            'bins': 15,
+            'range': (5, 20),
+            'scale': 1.0,
+            'is_vector': True
+        },
         'LeptonicSV_mass': {
             'name': 'lep_mass',
             'label': 'mass [GeV]',

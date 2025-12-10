@@ -354,12 +354,16 @@ def main():
         if item['data_source'] == 'event_flag':
             current_data_data = data_data_map.get(flag, {})
         else:
-            # For custom cuts, find the matching region
-            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
-            if custom_region_idx >= 0:
-                custom_region_name = list(custom_data_data_map.keys())[custom_region_idx]
-                current_data_data = custom_data_data_map.get(custom_region_name, {})
+            # For custom cuts, find the matching region (only if data files were provided)
+            if custom_data_data_map:
+                custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
+                if custom_region_idx >= 0 and custom_region_idx < len(custom_data_data_map):
+                    custom_region_name = list(custom_data_data_map.keys())[custom_region_idx]
+                    current_data_data = custom_data_data_map.get(custom_region_name, {})
+                else:
+                    current_data_data = {}
             else:
+                # No data files provided
                 current_data_data = {}
         
         # --- Data/MC Comparison Plots (FIRST to avoid palette interference) ---
@@ -387,7 +391,8 @@ def main():
             if "NHad" in flag and "NLep" not in flag:
                 # Pure hadronic final state - use HadronicSV variables
                 hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig', 
-                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta']
+                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
+                              'HadronicSV_nTracks']
                 datamc_vars.extend(hadSV_vars)
             elif "NLep" in flag and "NHad" not in flag:
                 # Pure leptonic final state - use LeptonicSV variables  
@@ -397,7 +402,8 @@ def main():
             elif "NHad" in flag and "NLep" in flag:
                 # Combined final state - use BOTH HadronicSV and LeptonicSV variables
                 hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig', 
-                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta']
+                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
+                              'HadronicSV_nTracks']
                 lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
                               'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
                 datamc_vars.extend(hadSV_vars)

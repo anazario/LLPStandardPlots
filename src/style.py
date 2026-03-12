@@ -111,9 +111,10 @@ class StyleManager:
         plot_type: "1d", "2d", "datamc", or "default"
         Returns latex objects to keep alive.
         """
-        # Check if we need TMathText rendering for any symbols
-        has_ell = "\\ell\\ell" in label
-        has_hh = "hh" in label
+        # Only use TMathText symbol rendering for standard region labels
+        is_region_label = label.startswith("Region:")
+        has_ell = is_region_label and "\\ell\\ell" in label
+        has_hh = is_region_label and "hh" in label
         
         if has_ell or has_hh:
             # Split approach: draw main label with placeholders, then overlay symbols
@@ -129,7 +130,7 @@ class StyleManager:
             main_latex.SetTextSize(textsize)
             main_latex.SetTextFont(42)
             main_latex.SetTextAlign(11)  # Left aligned
-            main_text = f"Region: {main_label}"
+            main_text = main_label
             main_latex.DrawLatex(x_pos, y_pos, main_text)
             
             latex_objects = [main_latex]
@@ -178,5 +179,5 @@ class StyleManager:
             fs_latex.SetTextSize(textsize)
             fs_latex.SetTextFont(42)
             fs_latex.SetTextAlign(11)  # Left aligned
-            fs_latex.DrawLatex(x_pos, y_pos, f"Region: {label}")
+            fs_latex.DrawLatex(x_pos, y_pos, label)
             return fs_latex

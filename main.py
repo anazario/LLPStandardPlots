@@ -13,7 +13,7 @@ from src.plotter import Plotter1D, Plotter2D, PlotterDataMC
 from src.selections import FinalStateResolver
 from src.utils import parse_signal_name, parse_background_name
 
-from src.config import AnalysisConfig
+from src.config import AnalysisConfig, AnalysisMode, ModeConfig
 
 def expand_input_paths(input_paths):
     """
@@ -201,13 +201,20 @@ def parse_arguments():
                        help='Types of plots to generate')
     
     # 1D Options
-    parser.add_argument('--vars', nargs='+', default=['rjr_Ms', 'rjr_Rs'], 
-                       help='Variables to plot in 1D mode (must be defined in src/config.py)')
+    parser.add_argument('--vars', nargs='+', default=None,
+                       help='Variables to plot in 1D mode (must be defined in src/config.py). Defaults based on analysis type.')
     parser.add_argument('--normalize', action='store_true', help='Normalize 1D plots to area 1')
-    
+
     # Analysis Options
+    parser.add_argument('--analysis-type', choices=['uncompressed', 'compressed'],
+                       default='uncompressed',
+                       help='Analysis type: uncompressed (default) or compressed')
+    parser.add_argument('--isr-pt-cut', type=float, default=None,
+                       help='Minimum pT(ISR) cut in GeV (compressed mode only). Default: 700 when compressed mode is used.')
     parser.add_argument('--lumi', type=float, default=400.0, help='Integrated luminosity in fb^-1 (default: 400)')
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
+    parser.add_argument('--labels', nargs='+', default=None,
+                       help='Custom labels for custom cut regions (1:1 with non-event-flag entries in --flags)')
     
     
     # Output Format Options
@@ -218,7 +225,36 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
-    
+
+    # Get mode configuration
+    analysis_mode = args.analysis_type
+    mode_config = ModeConfig.get(analysis_mode)
+
+    # Set default variables based on mode if not specified
+    if args.vars is None:
+        args.vars = mode_config['default_vars']
+
+    # Handle ISR pT cut - only relevant in compressed mode
+    isr_pt_cut = None
+    if analysis_mode == AnalysisMode.COMPRESSED:
+        if args.isr_pt_cut is not None:
+            isr_pt_cut = args.isr_pt_cut
+        else:
+            isr_pt_cut = mode_config.get('isr_pt_cut_default', 700.0)
+    elif args.isr_pt_cut is not None:
+        print(f"Warning: --isr-pt-cut is ignored in uncompressed mode")
+
+    # Check for unsupported plot types in compressed mode
+    if analysis_mode == AnalysisMode.COMPRESSED:
+        if 'ratio' in args.plots or 'unrolled' in args.plots or 'all' in args.plots:
+            print(f"Note: Data/MC ratio and unrolled plots are not yet implemented for compressed mode.")
+            print(f"      Only 1D and 2D distribution plots will be generated.")
+            # Filter to only supported plot types
+            if 'all' in args.plots:
+                args.plots = ['1d', '2d']
+            else:
+                args.plots = [p for p in args.plots if p in ['1d', '2d']]
+
     # Expand input paths to handle directories
     try:
         signal_files = expand_input_paths(args.signal)
@@ -227,17 +263,17 @@ def main():
     except (FileNotFoundError, Exception) as e:
         print(f"Error: {e}")
         sys.exit(1)
-    
+
     # Handle unblinding warning if requested
     if args.unblind and data_files:
         if not prompt_unblind_warning():
             print("Exiting...")
             return
-    
+
     # Handle output format and smart file naming
     output_format = args.format
     output_path = args.output
-    
+
     if output_format == 'root':
         # For ROOT format: handle smart .root extension
         if not output_path.endswith('.root'):
@@ -255,12 +291,13 @@ def main():
         use_root_file = False
         # Create output directory if it doesn't exist
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
+
     # Setup
     style = StyleManager(luminosity=args.lumi)
     style.set_style()
-    
-    loader = DataLoader(args.tree, luminosity=args.lumi)
+
+    loader = DataLoader(args.tree, luminosity=args.lumi,
+                       analysis_mode=analysis_mode, isr_pt_cut=isr_pt_cut)
     plotter1d = Plotter1D(style)
     plotter2d = Plotter2D(style)
     plotter_datamc = PlotterDataMC(style)
@@ -304,16 +341,18 @@ def main():
             'show_region_label': True
         })
     
-    # Add custom cuts  
+    # Add custom cuts
     for i, custom_region in enumerate(custom_sig_data_map.keys()):
         original_cut = custom_cuts[i] if i < len(custom_cuts) else "Unknown"
+        custom_label = args.labels[i] if args.labels and i < len(args.labels) else None
         all_flags_and_cuts.append({
             'name': custom_region,
             'data_source': 'custom_cut',
             'sig_data': custom_sig_data_map.get(custom_region, {}),
             'bg_data': custom_bg_data_map.get(custom_region, {}),
             'show_region_label': False,
-            'original_cut': original_cut
+            'original_cut': original_cut,
+            'custom_label': custom_label
         })
     
     # Process all flags and cuts uniformly
@@ -336,7 +375,10 @@ def main():
             continue
             
         # Create Directory structure
-        fs_label_latex = resolver.format_sv_label(flag) if show_region_label else None
+        if show_region_label:
+            fs_label_latex = resolver.format_sv_label(flag)
+        else:
+            fs_label_latex = item.get('custom_label', None)
         # Clean latex for folder name (remove special chars)
         folder_name = flag 
         
@@ -470,51 +512,55 @@ def main():
             print(f"  Generating Unrolled Plots (both merged_rs and merged_ms)...")
             unrolled_subdir = f"{folder_name}/unrolled_plots"
             unrolled_norm_subdir = f"{folder_name}/unrolled_plots_norm"
-            
+
             # Check blinding
             if args.unblind:
                 blind_data = False
             else:
                 blind_data = is_signal_region(flag) or item['data_source'] == 'custom_cut'
 
+            # Create directories once before the loop
+            if use_root_file:
+                u_dir = fs_dir.mkdir("unrolled_plots")
+                if args.normalize:
+                    u_norm_dir = fs_dir.mkdir("unrolled_plots_norm")
+
             # Generate both schemes
             for scheme in ['merged_rs', 'merged_ms']:
                 print(f"    Creating {scheme} plots...")
-                
+
                 # 1. Standard Unrolled
                 if use_root_file:
-                    u_dir = fs_dir.mkdir("unrolled_plots")
                     u_dir.cd()
 
                 canvas = plotter_datamc.create_unrolled_comparison(
-                    current_data_data, current_bg_data, 
-                    scheme=scheme, 
-                    blind_data=blind_data, 
-                    final_state_label=fs_label_latex, 
-                    suffix=f"{flag}_{scheme}", 
+                    current_data_data, current_bg_data,
+                    scheme=scheme,
+                    blind_data=blind_data,
+                    final_state_label=fs_label_latex,
+                    suffix=f"{flag}_{scheme}",
                     normalized=False
                 )
                 save_canvas(canvas, output_format, f_out, output_dir, unrolled_subdir)
-                
+
                 if use_root_file:
                     fs_dir.cd()
 
                 # 2. Normalized Unrolled (if requested via --normalize)
                 if args.normalize:
                     if use_root_file:
-                        u_norm_dir = fs_dir.mkdir("unrolled_plots_norm")
                         u_norm_dir.cd()
-                        
+
                     canvas_norm = plotter_datamc.create_unrolled_comparison(
-                        current_data_data, current_bg_data, 
-                        scheme=scheme, 
-                        blind_data=blind_data, 
-                        final_state_label=fs_label_latex, 
-                        suffix=f"{flag}_{scheme}", 
+                        current_data_data, current_bg_data,
+                        scheme=scheme,
+                        blind_data=blind_data,
+                        final_state_label=fs_label_latex,
+                        suffix=f"{flag}_{scheme}",
                         normalized=True
                     )
                     save_canvas(canvas_norm, output_format, f_out, output_dir, unrolled_norm_subdir)
-                    
+
                     if use_root_file:
                         fs_dir.cd()
 
@@ -522,32 +568,58 @@ def main():
         if '2d' in args.plots or 'all' in args.plots:
             print("  Generating 2D Plots...")
             plots_2d_subdir = f"{folder_name}/2D_plots"
-            
+
             if use_root_file:
                 plots_2d_dir = fs_dir.mkdir("2D_plots")
                 plots_2d_dir.cd()
-            
-            # Signal 2D
-            for fname, data in current_sig_data.items():
-                sig_name = parse_signal_name(fname)
-                sample_label_x_pos = 0.32 # Original logic for signal
-                canvas, _ = plotter2d.plot_2d(data, f"sig_2d_{Path(fname).stem}_{flag}", sig_name, fs_label_latex, sample_label_x_pos=sample_label_x_pos)
-                save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
-                
-            # Background 2D (Individual)
-            for fname, data in current_bg_data.items():
-                bg_name = parse_background_name(fname)
-                # Original logic for individual background
-                sample_label_x_pos = 0.62 if "QCD" in bg_name else 0.69 
-                canvas, _ = plotter2d.plot_2d(data, f"bg_2d_{Path(fname).stem}_{flag}", bg_name, fs_label_latex, sample_label_x_pos=sample_label_x_pos)
-                save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
-                
-            # Background 2D (Combined)
-            if current_bg_combined:
-                sample_label_x_pos = 0.59 # Original logic for combined background
-                canvas, _ = plotter2d.plot_2d(current_bg_combined, f"bg_2d_total_{flag}", "Total Background", fs_label_latex, sample_label_x_pos=sample_label_x_pos)
-                save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
-                
+
+            # Get 2D plot configurations from mode config
+            plot_2d_configs = mode_config['plot_2d_configs']
+
+            for plot_config in plot_2d_configs:
+                x_var = plot_config['x_var']
+                y_var = plot_config['y_var']
+                suffix = plot_config['suffix']
+
+                # Signal 2D
+                for fname, data in current_sig_data.items():
+                    sig_name = parse_signal_name(fname)
+                    sample_label_x_pos = 0.32  # Original logic for signal
+                    canvas, _ = plotter2d.plot_2d(
+                        data, f"sig_2d_{Path(fname).stem}_{flag}_{suffix}",
+                        sig_name, fs_label_latex,
+                        sample_label_x_pos=sample_label_x_pos,
+                        x_var=x_var, y_var=y_var
+                    )
+                    if canvas:
+                        save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
+
+                # Background 2D (Individual)
+                for fname, data in current_bg_data.items():
+                    bg_name = parse_background_name(fname)
+                    # Original logic for individual background
+                    sample_label_x_pos = 0.62 if "QCD" in bg_name else 0.69
+                    canvas, _ = plotter2d.plot_2d(
+                        data, f"bg_2d_{Path(fname).stem}_{flag}_{suffix}",
+                        bg_name, fs_label_latex,
+                        sample_label_x_pos=sample_label_x_pos,
+                        x_var=x_var, y_var=y_var
+                    )
+                    if canvas:
+                        save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
+
+                # Background 2D (Combined)
+                if current_bg_combined:
+                    sample_label_x_pos = 0.59  # Original logic for combined background
+                    canvas, _ = plotter2d.plot_2d(
+                        current_bg_combined, f"bg_2d_total_{flag}_{suffix}",
+                        "Total Background", fs_label_latex,
+                        sample_label_x_pos=sample_label_x_pos,
+                        x_var=x_var, y_var=y_var
+                    )
+                    if canvas:
+                        save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
+
             # Return to parent directory
             if use_root_file:
                 fs_dir.cd()

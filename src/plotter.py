@@ -17,7 +17,7 @@ class PlotterBase:
         if label:
             y_pos = y_pos if y_pos is not None else self.style.cms_y_pos
             textsize = textsize if textsize is not None else self.style.sample_label_size
-            
+
             # Use style manager to handle complex label rendering
             latex_objects = self.style.draw_region_label(canvas, label, x_pos, y_pos, textsize, plot_type)
             
@@ -32,11 +32,11 @@ class PlotterBase:
     def _map_var_name(self, var_name):
         """Map short variable names to full data keys."""
         var_map = {
-            'ms': 'rjr_Ms', 
+            'ms': 'rjr_Ms',
             'rs': 'rjr_Rs',
             'met': 'selCMet',
             'had_mass': 'HadronicSV_mass',
-            'had_dxy': 'HadronicSV_dxy', 
+            'had_dxy': 'HadronicSV_dxy',
             'had_dxysig': 'HadronicSV_dxySig',
             'had_povere': 'HadronicSV_pOverE',
             'had_decayangle': 'HadronicSV_decayAngle',
@@ -44,10 +44,20 @@ class PlotterBase:
             'ntracks': 'HadronicSV_nTracks',
             'lep_mass': 'LeptonicSV_mass',
             'lep_dxy': 'LeptonicSV_dxy',
-            'lep_dxysig': 'LeptonicSV_dxySig', 
+            'lep_dxysig': 'LeptonicSV_dxySig',
             'lep_povere': 'LeptonicSV_pOverE',
             'lep_decayangle': 'LeptonicSV_decayAngle',
-            'lep_costheta': 'LeptonicSV_cosTheta'
+            'lep_costheta': 'LeptonicSV_cosTheta',
+            # ISR variables (compressed scenario)
+            'isr_ms': 'rjrIsr_Ms',
+            'isr_msperp': 'rjrIsr_MsPerp',
+            'isr_ptisr': 'rjrIsr_PtIsr',
+            'isr_risr': 'rjrIsr_RIsr',
+            'isr_rs': 'rjrIsr_Rs',
+            'isr_nsvisobjects': 'rjrIsr_nSVisObjects',
+            'isr_nisrvisobjects': 'rjrIsr_nIsrVisObjects',
+            'isr_pts': 'rjrIsrPTS',
+            'isr_sdphibv': 'rjrIsrSdphiBV'
         }
         return var_map.get(var_name, var_name)
 
@@ -164,7 +174,7 @@ class Plotter1D(PlotterBase):
         # Keep objects alive
         canvas.hists = hists
         canvas.legend = legend
-        
+
         return canvas
 
     def plot_signals_vs_net_background(self, signals_data, background_combined, var_name, var_label, bins, x_min, x_max, normalized=False, suffix="", final_state_label=None):
@@ -224,7 +234,7 @@ class Plotter1D(PlotterBase):
         self._draw_region_label(canvas, final_state_label, plot_type="1d")
 
         canvas.Update() # Ensure all drawing is updated
-        
+
         # Keep objects alive
         canvas.bg_hist = bg_hist
         canvas.sig_hists = sig_hists
@@ -245,22 +255,38 @@ class Plotter2D(PlotterBase):
             
         return hist
 
-    def plot_2d(self, data, name, sample_label, final_state_label, sample_label_x_pos=0.65):
-        """Creates a CMS styled 2D plot."""
+    def plot_2d(self, data, name, sample_label, final_state_label, sample_label_x_pos=0.65,
+                x_var='rjr_Ms', y_var='rjr_Rs'):
+        """Creates a CMS styled 2D plot with configurable x and y variables."""
         # Load ranges from config
-        ms_conf = AnalysisConfig.VARIABLES['rjr_Ms']
-        rs_conf = AnalysisConfig.VARIABLES['rjr_Rs']
-        
-        ms_min, ms_max = ms_conf['range']
-        rs_min, rs_max = rs_conf['range']
-        ms_label = ms_conf['label']
-        rs_label = rs_conf['label']
-        
-        hist = self.create_2d_histogram(data['rjr_Ms'], data['rjr_Rs'], data['weights'], 
-                                      ms_conf['bins'], ms_min, ms_max, 
-                                      rs_conf['bins'], rs_min, rs_max, name)
-        
-        canvas = CMS.cmsCanvas(name, ms_min, ms_max, rs_min, rs_max, ms_label, rs_label, 
+        x_conf = AnalysisConfig.VARIABLES.get(x_var)
+        y_conf = AnalysisConfig.VARIABLES.get(y_var)
+
+        if not x_conf or not y_conf:
+            raise ValueError(f"Variable config not found for x_var={x_var} or y_var={y_var}")
+
+        x_min, x_max = x_conf['range']
+        y_min, y_max = y_conf['range']
+        x_label = x_conf['label']
+        y_label = y_conf['label']
+
+        # Get data arrays - use the mapped variable name or branch name directly
+        x_data_key = self._map_var_name(x_conf['name'])
+        y_data_key = self._map_var_name(y_conf['name'])
+
+        # Try branch name first, then mapped name
+        x_data = data.get(x_var, data.get(x_data_key, []))
+        y_data = data.get(y_var, data.get(y_data_key, []))
+
+        if len(x_data) == 0 or len(y_data) == 0:
+            print(f"  Warning: No data for 2D plot {name} (x_var={x_var}, y_var={y_var})")
+            return None, None
+
+        hist = self.create_2d_histogram(x_data, y_data, data['weights'],
+                                      x_conf['bins'], x_min, x_max,
+                                      y_conf['bins'], y_min, y_max, name)
+
+        canvas = CMS.cmsCanvas(name, x_min, x_max, y_min, y_max, x_label, y_label,
                               square=False, extraSpace=0.01, iPos=0, with_z_axis=True)
         canvas.SetLogz(True)
         canvas.SetGridx(True)
@@ -268,15 +294,15 @@ class Plotter2D(PlotterBase):
         canvas.SetLeftMargin(self.style.margin_left)
         canvas.SetRightMargin(self.style.margin_right+0.06)
         canvas.cd() # Explicitly change to this canvas
-        
+
         # Re-apply palette (CMS style might reset it)
         ROOT.gStyle.SetPalette(self.style.color_palette)
-        
+
         # Set histogram formatting (restored from original)
         hist.SetStats(0)
         hist.SetTitle("")
-        hist.GetXaxis().SetTitle(ms_label)
-        hist.GetYaxis().SetTitle(rs_label)
+        hist.GetXaxis().SetTitle(x_label)
+        hist.GetYaxis().SetTitle(y_label)
         hist.GetZaxis().SetTitle("Events")
         hist.GetXaxis().CenterTitle(True)
         hist.GetYaxis().CenterTitle(True)
@@ -603,7 +629,7 @@ class PlotterDataMC(PlotterBase):
 
         if final_state_label:
             self._draw_region_label(canvas, final_state_label, x_pos=0.4, y_pos=0.93, textsize=0.05, plot_type="datamc")
-        
+
         # Draw bottom pad (ratio) only if data is available
         if data_hist:
             pad2.cd()

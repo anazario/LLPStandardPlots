@@ -41,7 +41,7 @@ class FinalStateResolver:
                     selection = "SR,L"
                 else:
                     selection = "SR,T"
-            return f"SV_{{\ell\ell}}SV_{{hh}}^{{{selection}}}"
+            return f"Region: SV_{{\ell\ell}}SV_{{hh}}^{{{selection}}}"
             
         elif "NHad" in final_state:
             flavor = "hh"
@@ -77,7 +77,7 @@ class FinalStateResolver:
             else:
                 selection = "SR,T"
                 
-        return f"{count}SV_{{{flavor}}}^{{{selection}}}"
+        return f"Region: {count}SV_{{{flavor}}}^{{{selection}}}"
 
     @staticmethod
     def get_active_flag(tree_branches):

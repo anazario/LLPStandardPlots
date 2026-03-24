@@ -41,7 +41,11 @@ class DataLoader:
             'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
             'HadronicSV_nTracks',
             'LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
-            'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta'
+            'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta',
+            # Photon timing variables (Gen branches absent in data files; handled gracefully)
+            'baseLinePhoton_WTimeSig',
+            'baseLinePhoton_GenTimeSig',
+            'baseLinePhoton_GenLabTimeSig'
         ]
 
         # Add mode-specific branches
@@ -348,6 +352,10 @@ class DataLoader:
                 if var_key not in data:
                     continue
 
+                # Skip MC-only variables when processing data
+                if var_config.get('mc_only', False) and is_data:
+                    continue
+
                 if var_key not in extracted_data:
                     extracted_data[var_key] = []
                     if var_key != 'weights':  # Don't create weights array for weights key
@@ -366,6 +374,14 @@ class DataLoader:
                     sv_array = data[var_key][idx]
                     for sv_val in sv_array:
                         scaled_val = sv_val * var_config['scale']
+                        extracted_data[var_key].append(scaled_val)
+                        extracted_data[f'{var_key}_weights'].append(base_weight)
+
+                elif var_key.startswith('baseLinePhoton_'):
+                    # Photon variables: flatten jagged arrays - one entry per photon object
+                    photon_array = data[var_key][idx]
+                    for ph_val in photon_array:
+                        scaled_val = ph_val * var_config['scale']
                         extracted_data[var_key].append(scaled_val)
                         extracted_data[f'{var_key}_weights'].append(base_weight)
 

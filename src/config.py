@@ -211,6 +211,36 @@ class AnalysisConfig:
             'range': (0, 3.15),
             'scale': 1.0,
             'is_vector': False
+        },
+        # Photon timing variables
+        # baseLinePhoton_WTimeSig: available for both data and MC
+        # baseLinePhoton_GenTimeSig, baseLinePhoton_GenLabTimeSig: MC only (no gen info in data)
+        'baseLinePhoton_WTimeSig': {
+            'name': 'photon_wtimesig',
+            'label': 't_{#gamma}^{w}/#sigma_{t}',
+            'bins': 50,
+            'range': (-3, 15),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': False
+        },
+        'baseLinePhoton_GenTimeSig': {
+            'name': 'photon_gentimesig',
+            'label': 't_{#gamma}^{gen}/#sigma_{t}',
+            'bins': 50,
+            'range': (-3, 15),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': True
+        },
+        'baseLinePhoton_GenLabTimeSig': {
+            'name': 'photon_genlabsig',
+            'label': 't_{#gamma,lab}^{gen}/#sigma_{t}',
+            'bins': 50,
+            'range': (-3, 15),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': True
         }
     }
 

@@ -3,80 +3,128 @@ import re
 class FinalStateResolver:
     """Resolves final state flags to LaTeX labels."""
     
+    # Ordered photon region keyword → compact LaTeX label.
+    # Checked most-specific first so e.g. "EarlyBeamHalo" matches before "BeamHalo".
+    _PHOTON_REGION_MAP = [
+        ('EarlyBeamHalo',          '#gamma_{t-}^{CR, BH}'),
+        ('LateBeamHalo',           '#gamma_{t+}^{CR, BH}'),
+        ('BeamHalo',               '#gamma_{t0}^{CR, BH}'),
+        ('EarlyNotBH',             '#gamma_{t-}^{CR, !BH}'),
+        ('LateNotBH',              '#gamma_{t+}^{SR, !BH}'),
+        ('NotBHPrompt',            '#gamma_{t0}^{CR, !BH}'),
+        ('NotBH',                  '#gamma^{CR, !BH}'),
+        ('PromptLooseNotTightIso1','#gamma_{t0}^{CR, L!T iso, 1}'),
+        ('PromptLooseNotTightIso2','#gamma_{t0}^{CR, L!T iso, 2}'),
+        ('PromptLooseNotTightIso', '#gamma_{t0}^{CR, L!T iso}'),
+        ('PromptTightIso',         '#gamma_{t0}^{SR, tight iso}'),
+    ]
+
     @staticmethod
     def format_sv_label(final_state: str) -> str:
         """
-        Format final state labels according to SV convention: {N}SV_{flavor}^{selection}
-        
-        Convention:
-        - N: total count of SVs (only shown for 2 or more, just shows "2")
-        - flavor: 'hh' (hadronic) or '\ell\ell' (leptonic)
-        - selection: CRL, SRL, CRT, SRT
-        - mixed case: SV_{\ell\ell}SV_{hh}^{selection}
-        
-        Examples:
-        - passNHad1SelectionSRLoose -> SV_{hh}^{SR,L}
-        - passNLep1SelectionSRTight -> SV_{\ell\ell}^{SR,T}
-        - passNHad2SelectionCRLoose -> 2SV_{hh}^{CR,L}
-        - passNLepNHadSelectionSRTight -> SV_{\ell\ell}SV_{hh}^{SR,T}
+        Format final state labels for SV-based and photon-based selections.
+
+        SV convention: {N}SV_{flavor}^{selection}
+          - N: shown only for ≥2 SVs
+          - flavor: 'hh' (hadronic) or '\\ell\\ell' (leptonic)
+          - selection: CR/SR + L/T
+
+        Photon convention: {N}<region_label>
+          - Region label encodes timing and BH/!BH info (see _PHOTON_REGION_MAP)
+          - N: "2" prefix for NPhoEq2, empty otherwise
+
+        Mixed photon+SV: {N}<photon_region> + {sv_count}SV_{flavor}
+
+        SV examples:
+          passNHad1SelectionSRLoose         -> Region: SV_{hh}^{SR,L}
+          passNLep1SelectionSRTight         -> Region: SV_{\\ell\\ell}^{SR,T}
+          passNHad2SelectionCRLoose         -> Region: 2SV_{hh}^{CR,L}
+          passNLepNHadSelectionSRTight      -> Region: SV_{\\ell\\ell}SV_{hh}^{SR,T}
+
+        Photon examples:
+          passNPhoEq1SelectionEarlyBeamHaloCR    -> Region: #gamma_{t-}^{CR, BH}
+          passNPhoEq2SelectionLateNotBHSR        -> Region: 2#gamma_{t+}^{SR, !BH}
+          passNPhoGe1SelectionPromptTightIsoSR   -> Region: #gamma_{t0}^{SR, tight iso}
+          passNPhoEq1SelectionNotBHCR            -> Region: #gamma^{CR, !BH}
         """
-        
-        # Default values
+
+        # ------------------------------------------------------------------ #
+        # Photon path                                                          #
+        # ------------------------------------------------------------------ #
+        if "NPho" in final_state:
+            # Multiplicity prefix: "2" for NPhoEq2, empty for Eq1/Ge1
+            pho_count = "2" if "NPhoEq2" in final_state else ""
+
+            # Resolve photon region label (most-specific keyword wins)
+            pho_region = None
+            for keyword, label in FinalStateResolver._PHOTON_REGION_MAP:
+                if keyword in final_state:
+                    pho_region = label
+                    break
+            # Fallback: no photon-specific region keyword found; use SV-style region suffix
+            if pho_region is None:
+                if "CR" in final_state:
+                    sel = "CR,L" if "Loose" in final_state else "CR,T"
+                elif "SR" in final_state:
+                    sel = "SR,L" if "Loose" in final_state else "SR,T"
+                else:
+                    sel = ""
+                pho_region = f"#gamma^{{{sel}}}" if sel else "#gamma"
+
+            # Optional SV component (mixed photon+SV flags)
+            sv_part = ""
+            if "NHad" in final_state:
+                sv_count = ""
+                had_match = re.search(r'NHad(\d+)', final_state)
+                if had_match and int(had_match.group(1)) >= 2:
+                    sv_count = "2"
+                sv_part = f" + {sv_count}SV_{{hh}}"
+            elif "NLep" in final_state:
+                sv_count = ""
+                lep_match = re.search(r'NLep(\d+)', final_state)
+                if lep_match and int(lep_match.group(1)) >= 2:
+                    sv_count = "2"
+                sv_part = f" + {sv_count}SV_{{\\ell\\ell}}"
+
+            return f"Region: {pho_count}{pho_region}{sv_part}"
+
+        # ------------------------------------------------------------------ #
+        # SV path (original logic preserved exactly)                           #
+        # ------------------------------------------------------------------ #
         count = ""
         flavor = "hh"  # default to hadronic
         selection = "SR,T"  # default to signal region tight
-        
-        # Parse the branch name pattern
-        
-        # Extract flavor and count
+
         if "HadAndLep" in final_state or "LepAndHad" in final_state:
-            # Mixed case
             if "CR" in final_state:
-                if "Loose" in final_state:
-                    selection = "CR,L"
-                else:
-                    selection = "CR,T"
+                selection = "CR,L" if "Loose" in final_state else "CR,T"
             elif "SR" in final_state:
-                if "Loose" in final_state:
-                    selection = "SR,L"
-                else:
-                    selection = "SR,T"
-            return f"Region: SV_{{\ell\ell}}SV_{{hh}}^{{{selection}}}"
-            
+                selection = "SR,L" if "Loose" in final_state else "SR,T"
+            return f"Region: SV_{{\\ell\\ell}}SV_{{hh}}^{{{selection}}}"
+
         elif "NHad" in final_state:
             flavor = "hh"
             if "HadGe2" in final_state:
                 count = "2"
             else:
                 had_match = re.search(r'NHad(\d+)', final_state)
-                if had_match:
-                    sv_count = int(had_match.group(1))
-                    if sv_count >= 2:
-                        count = "2"
-                        
+                if had_match and int(had_match.group(1)) >= 2:
+                    count = "2"
+
         elif "NLep" in final_state:
             flavor = "\\ell\\ell"
             if "LepGe2" in final_state:
                 count = "2"
             else:
                 lep_match = re.search(r'NLep(\d+)', final_state)
-                if lep_match:
-                    sv_count = int(lep_match.group(1))
-                    if sv_count >= 2:
-                        count = "2"
-        
-        # Extract selection region
+                if lep_match and int(lep_match.group(1)) >= 2:
+                    count = "2"
+
         if "CR" in final_state:
-            if "Loose" in final_state:
-                selection = "CR,L"
-            else:
-                selection = "CR,T"
+            selection = "CR,L" if "Loose" in final_state else "CR,T"
         elif "SR" in final_state:
-            if "Loose" in final_state:
-                selection = "SR,L"
-            else:
-                selection = "SR,T"
-                
+            selection = "SR,L" if "Loose" in final_state else "SR,T"
+
         return f"Region: {count}SV_{{{flavor}}}^{{{selection}}}"
 
     @staticmethod

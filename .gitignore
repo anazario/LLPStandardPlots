@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 *~
+*.png
+*.pdf
+*.eps
+*.root
 
 # macOS Finder metadata
 .DS_Store

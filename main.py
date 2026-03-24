@@ -432,18 +432,18 @@ def main():
             
             if "NHad" in flag and "NLep" not in flag:
                 # Pure hadronic final state - use HadronicSV variables
-                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig', 
+                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
                               'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
                               'HadronicSV_nTracks']
                 datamc_vars.extend(hadSV_vars)
             elif "NLep" in flag and "NHad" not in flag:
-                # Pure leptonic final state - use LeptonicSV variables  
+                # Pure leptonic final state - use LeptonicSV variables
                 lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
                               'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
                 datamc_vars.extend(lepSV_vars)
             elif "NHad" in flag and "NLep" in flag:
                 # Combined final state - use BOTH HadronicSV and LeptonicSV variables
-                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig', 
+                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
                               'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
                               'HadronicSV_nTracks']
                 lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
@@ -451,6 +451,16 @@ def main():
                 datamc_vars.extend(hadSV_vars)
                 datamc_vars.extend(lepSV_vars)
             # else: for other flags (custom cuts, etc.) use only event-level variables
+
+            # Photon variables: added whenever NPho appears in the flag.
+            # mc_only variables (Gen-level) are excluded here since data/MC
+            # comparison requires the variable to exist in data files too.
+            if "NPho" in flag:
+                photon_vars = [
+                    v for v, c in AnalysisConfig.VARIABLES.items()
+                    if v.startswith('baseLinePhoton_') and not c.get('mc_only', False)
+                ]
+                datamc_vars.extend(photon_vars)
             
             for var_key in datamc_vars:
                 conf = AnalysisConfig.VARIABLES.get(var_key)

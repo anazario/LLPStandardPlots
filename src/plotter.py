@@ -1,6 +1,38 @@
 import ROOT
 import numpy as np
-import cmsstyle as CMS
+try:
+    import cmsstyle as CMS
+except ImportError:
+    class CMS:
+        @staticmethod
+        def cmsCanvas(canvName, x_min, x_max, y_min, y_max, nameXaxis, nameYaxis,
+                      square=True, iPos=11, extraSpace=0, with_z_axis=False, **kwargs):
+            W = 600 if square else 800
+            canv = ROOT.TCanvas(canvName, canvName, 50, 50, W, 600)
+            canv.SetFillColor(0)
+            canv.SetBorderMode(0)
+            canv.SetFrameFillStyle(0)
+            canv.SetFrameBorderMode(0)
+            h = canv.DrawFrame(x_min, y_min, x_max, y_max)
+            h.GetXaxis().SetTitle(nameXaxis)
+            h.GetYaxis().SetTitle(nameYaxis)
+            h.Draw("AXIS")
+            canv.RedrawAxis()
+            canv.GetFrame().Draw()
+            return canv
+
+        @staticmethod
+        def cmsLeg(x1, y1, x2, y2, textSize=0.04, textFont=42,
+                   textColor=ROOT.kBlack, **kwargs):
+            leg = ROOT.TLegend(x1, y1, x2, y2, "", "brNDC")
+            leg.SetTextSize(textSize)
+            leg.SetTextFont(textFont)
+            leg.SetTextColor(textColor)
+            leg.SetBorderSize(0)
+            leg.SetFillStyle(0)
+            leg.SetFillColor(0)
+            leg.Draw()
+            return leg
 from src.style import StyleManager
 from src.utils import parse_signal_name, parse_background_name
 from src.config import AnalysisConfig

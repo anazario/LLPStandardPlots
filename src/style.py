@@ -1,5 +1,9 @@
 import ROOT
-import cmsstyle as CMS
+try:
+    import cmsstyle as CMS
+    _CMS_AVAILABLE = True
+except ImportError:
+    _CMS_AVAILABLE = False
 
 class StyleManager:
     """Manages CMS plotting style configuration."""
@@ -53,8 +57,15 @@ class StyleManager:
 
     def set_style(self):
         """Apply global CMS style settings."""
-        CMS.SetExtraText("Preliminary")
-        CMS.SetLumi(self.luminosity)
+        if _CMS_AVAILABLE:
+            CMS.setCMSStyle()
+            CMS.SetExtraText("Preliminary")
+            CMS.SetLumi(self.luminosity)
+        else:
+            ROOT.gStyle.SetPadTickX(1)
+            ROOT.gStyle.SetPadTickY(1)
+            ROOT.gStyle.SetHatchesLineWidth(2)
+            ROOT.gStyle.SetHatchesSpacing(1.3)
         ROOT.gROOT.SetBatch(True)
     
     def reset_palette_for_1d(self):

@@ -3,7 +3,10 @@ import argparse
 import sys
 import ROOT
 from pathlib import Path
-import cmsstyle as CMS
+try:
+    import cmsstyle as CMS  # noqa: F401
+except ImportError:
+    print("Warning: cmsstyle not available, using built-in fallback style.")
 import os
 import glob
 

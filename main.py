@@ -149,27 +149,43 @@ def prompt_unblind_warning():
         print("\n\n✓ Interrupted. Aborting unblinding.")
         return False
 
-def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path="", canvas_name=None):
+def _write_hists_from_pad(pad):
+    """Recursively write all TH1-derived histograms found in a pad to the current ROOT directory."""
+    for prim in pad.GetListOfPrimitives():
+        if prim.InheritsFrom("TPad"):
+            _write_hists_from_pad(prim)
+        elif prim.InheritsFrom("TH1"):
+            prim.Write()
+
+
+def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path="", canvas_name=None, save_hists=False):
     """
     Save canvas in the specified format.
     For ROOT: writes to ROOT file in current directory
     For PDF/PNG: saves to output_dir with subdir_path structure
+    If save_hists=True (ROOT format only), also writes each histogram as a
+    standalone object alongside the canvas.
     """
     if output_format == 'root':
         if f_out is not None:
             canvas.Write()
+            if save_hists:
+                _write_hists_from_pad(canvas)
     else:
         # Create subdirectory structure for PDF/PNG
         save_dir = Path(output_dir) / subdir_path if subdir_path else Path(output_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Use canvas name or generate one
         if canvas_name is None:
             canvas_name = canvas.GetName()
-        
+
         # Save in the specified format
         save_path = save_dir / f"{canvas_name}.{output_format}"
         canvas.SaveAs(str(save_path))
+
+_save_canvas_impl = save_canvas  # module-level alias used by the wrapper inside main()
+
 
 def is_event_flag(flag_string):
     """Check if the string is a predefined event flag (starts with 'pass') or a custom cut."""
@@ -185,7 +201,7 @@ def parse_arguments():
     
     # Input Files
     parser.add_argument('--signal', nargs='+', required=True, help='Signal ROOT files or directories containing ROOT files')
-    parser.add_argument('--background', nargs='+', required=True, help='Background ROOT files or directories containing ROOT files')
+    parser.add_argument('--background', nargs='+', default=[], help='Background ROOT files or directories containing ROOT files')
     parser.add_argument('--data', nargs='*', help='Data ROOT files or directories containing ROOT files (for data/MC comparison plots)')
     parser.add_argument('--output', default='standard_plots.root', help='Output ROOT file')
     parser.add_argument('--tree', default='kuSkimTree', help='Tree name')
@@ -197,7 +213,7 @@ def parse_arguments():
     ], help='List of Final State Flags or custom cut strings to process')
     
     # Plot Types
-    parser.add_argument('--plots', nargs='+', choices=['1d', '2d', 'ratio', 'unrolled', 'all'], default=['all'],
+    parser.add_argument('--plots', nargs='+', choices=['1d', '2d', 'ratio', 'unrolled', 'cr_sig', 'all'], default=['all'],
                        help='Types of plots to generate')
     
     # 1D Options
@@ -212,14 +228,21 @@ def parse_arguments():
     parser.add_argument('--isr-pt-cut', type=float, default=None,
                        help='Minimum pT(ISR) cut in GeV (compressed mode only). Default: 700 when compressed mode is used.')
     parser.add_argument('--lumi', type=float, default=400.0, help='Integrated luminosity in fb^-1 (default: 400)')
+    parser.add_argument('--energy', type=float, default=13.6, help='Centre-of-mass energy in TeV (default: 13.6)')
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
+    parser.add_argument('--data-flag', default=None,
+                       help='Flag used to load data files for CR-vs-SR overlay plots '
+                            '(e.g. passNPhoGe1SelectionPromptLooseNotTightIsoCR). '
+                            'Data is loaded with this flag independently of --flags.')
     parser.add_argument('--labels', nargs='+', default=None,
                        help='Custom labels for custom cut regions (1:1 with non-event-flag entries in --flags)')
     
     
     # Output Format Options
-    parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root', 
+    parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root',
                        help='Output format: root (default), pdf, png, or eps')
+    parser.add_argument('--save-hists', action='store_true', default=False,
+                       help='(ROOT format only) Also write individual histogram objects alongside canvases')
     
     return parser.parse_args()
 
@@ -248,17 +271,17 @@ def main():
     if analysis_mode == AnalysisMode.COMPRESSED:
         if 'ratio' in args.plots or 'unrolled' in args.plots or 'all' in args.plots:
             print(f"Note: Data/MC ratio and unrolled plots are not yet implemented for compressed mode.")
-            print(f"      Only 1D and 2D distribution plots will be generated.")
+            print(f"      Only 1D, 2D, and cr_sig plots will be generated.")
             # Filter to only supported plot types
             if 'all' in args.plots:
-                args.plots = ['1d', '2d']
+                args.plots = ['1d', '2d', 'cr_sig']
             else:
-                args.plots = [p for p in args.plots if p in ['1d', '2d']]
+                args.plots = [p for p in args.plots if p in ['1d', '2d', 'cr_sig']]
 
     # Expand input paths to handle directories
     try:
         signal_files = expand_input_paths(args.signal)
-        background_files = expand_input_paths(args.background)
+        background_files = expand_input_paths(args.background) if args.background else []
         data_files = expand_input_paths(args.data) if args.data else []
     except (FileNotFoundError, Exception) as e:
         print(f"Error: {e}")
@@ -293,7 +316,7 @@ def main():
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Setup
-    style = StyleManager(luminosity=args.lumi)
+    style = StyleManager(luminosity=args.lumi, energy=args.energy)
     style.set_style()
 
     loader = DataLoader(args.tree, luminosity=args.lumi,
@@ -314,10 +337,26 @@ def main():
     sig_data_map, custom_sig_data_map = loader.load_data_unified(signal_files, event_flags, custom_cuts)
     bg_data_map, custom_bg_data_map = loader.load_data_unified(background_files, event_flags, custom_cuts)
     
-    # Load data files if provided
+    # Load data files if provided.
+    # --data-flag can be either an event flag ("pass...") or a custom cut string.
+    # We fold it into the appropriate list so everything loads in one pass.
     data_data_map, custom_data_data_map = {}, {}
+    data_flag_is_event = args.data_flag and is_event_flag(args.data_flag)
+    data_flag_key = None   # key used to retrieve cr_data_collection later
     if data_files:
-        data_data_map, custom_data_data_map = loader.load_data_unified(data_files, event_flags, custom_cuts, is_data=True)
+        data_event_flags = event_flags.copy()
+        data_custom_cuts = custom_cuts.copy()
+        if args.data_flag:
+            if data_flag_is_event:
+                if args.data_flag not in data_event_flags:
+                    data_event_flags.append(args.data_flag)
+                data_flag_key = args.data_flag          # key in data_data_map
+            else:
+                data_custom_cuts.append(args.data_flag)
+                data_flag_key = f'CustomRegion{len(data_custom_cuts)}'  # key in custom_data_data_map
+        data_data_map, custom_data_data_map = loader.load_data_unified(
+            data_files, data_event_flags, data_custom_cuts, is_data=True
+        )
     
     # Print comprehensive data loading summary
     loader.print_comprehensive_summary()
@@ -328,6 +367,10 @@ def main():
     else:
         f_out = None
     
+    # Shadow the module-level save_canvas to bake in save_hists, keeping all call sites unchanged
+    def save_canvas(canvas, fmt, fout, outdir, subdir="", cname=None):  # noqa: F811
+        _save_canvas_impl(canvas, fmt, fout, outdir, subdir, cname, save_hists=args.save_hists)
+
     # Combine both event flags and custom cuts into one processing loop
     all_flags_and_cuts = []
     
@@ -408,6 +451,14 @@ def main():
                 # No data files provided
                 current_data_data = {}
         
+        # Retrieve CR data collection for --data-flag (shared by 2D and cr_sig blocks)
+        cr_data_collection = {}
+        if data_files and args.data_flag:
+            if data_flag_is_event:
+                cr_data_collection = data_data_map.get(data_flag_key, {})
+            else:
+                cr_data_collection = custom_data_data_map.get(data_flag_key, {})
+
         # --- Data/MC Comparison Plots (FIRST to avoid palette interference) ---
         if args.data and ('ratio' in args.plots or 'all' in args.plots):
             print("  Generating Data/MC Comparison Plots...")
@@ -630,6 +681,34 @@ def main():
                     if canvas:
                         save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
 
+                # Data 2D — two independent sources, each producing its own canvas:
+                # 1. Current flag (CR only): data loaded under the same flag as signal/bg
+                # 2. --data-flag CR collection (if provided and different from current flag)
+                data_2d_cases = []
+                if current_data_data and not is_signal_region(flag):
+                    data_2d_cases.append((
+                        current_data_data, fs_label_latex,
+                        f"data_2d_{flag}_{suffix}"
+                    ))
+                if cr_data_collection and args.data_flag != flag:
+                    cr_region_label = (resolver.format_sv_label(args.data_flag)
+                                       if data_flag_is_event else f"Region: {args.data_flag}")
+                    data_2d_cases.append((
+                        cr_data_collection, cr_region_label,
+                        f"data_2d_{args.data_flag}_{suffix}"
+                    ))
+                for data_coll, region_label, canvas_name in data_2d_cases:
+                    combined = loader.combine_data(data_coll)
+                    if combined:
+                        canvas, _ = plotter2d.plot_2d(
+                            combined, canvas_name,
+                            "Data", region_label,
+                            sample_label_x_pos=0.59,
+                            x_var=x_var, y_var=y_var, is_data=True
+                        )
+                        if canvas:
+                            save_canvas(canvas, output_format, f_out, output_dir, plots_2d_subdir)
+
             # Return to parent directory
             if use_root_file:
                 fs_dir.cd()
@@ -672,7 +751,46 @@ def main():
             # Return to parent directory
             if use_root_file:
                 fs_dir.cd()
-        
+
+        # --- CR Data vs SR Signal Plots ---
+        do_cr_sig = ('cr_sig' in args.plots or 'all' in args.plots) and args.data_flag and data_files
+        if do_cr_sig and current_sig_data:
+            # cr_data_collection already computed above
+            if not cr_data_collection:
+                print(f"  Skipping CR-vs-SR plots: no data events passed '{args.data_flag}'")
+            else:
+                print(f"  Generating CR Data vs SR Signal Plots (data flag: {args.data_flag})...")
+                cr_sig_subdir = f"{folder_name}/cr_vs_sr_plots"
+                # Use formatted label for named flags, raw cut string for custom cuts
+                cr_label = resolver.format_sv_label(args.data_flag) if data_flag_is_event else args.data_flag
+
+                if use_root_file:
+                    cr_sig_dir = fs_dir.mkdir("cr_vs_sr_plots")
+                    cr_sig_dir.cd()
+
+                for var_key in args.vars:
+                    conf = AnalysisConfig.VARIABLES.get(var_key)
+                    if not conf:
+                        continue
+                    # Skip MC-only variables — data CR cannot provide them
+                    if conf.get('mc_only', False):
+                        continue
+                    short_name = conf['name']
+                    label = conf['label']
+                    nbins = conf['bins']
+                    xmin, xmax = conf['range']
+
+                    canvas = plotter1d.plot_cr_data_vs_sr_signal(
+                        cr_data_collection, current_sig_data,
+                        short_name, label, nbins, xmin, xmax,
+                        cr_label=cr_label, suffix=flag,
+                        final_state_label=fs_label_latex
+                    )
+                    save_canvas(canvas, output_format, f_out, output_dir, cr_sig_subdir)
+
+                if use_root_file:
+                    fs_dir.cd()
+
 
     if use_root_file:
         f_out.Close()

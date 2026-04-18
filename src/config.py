@@ -13,10 +13,11 @@ class AnalysisConfig:
         'rjr_Ms': {
             'name': 'ms',                 # Internal short name
             'label': 'M_{S} [TeV]',       # LaTeX label
-            'bins': 50, 
+            'bins': 50,
             'range': (0, 10),             # (min, max)
             'scale': 0.001,               # Scale factor (e.g. GeV -> TeV)
-            'is_vector': True             # If it requires the vector loop extraction
+            'is_vector': True,            # If it requires the vector loop extraction
+            'cross_cut': ('rjr_Rs', '>', 0.15)   # Require Rs > 0.15 when plotting Ms
         },
         'rjr_Rs': {
             'name': 'rs',
@@ -24,7 +25,8 @@ class AnalysisConfig:
             'bins': 50,
             'range': (0, 1.0),
             'scale': 1.0,
-            'is_vector': True
+            'is_vector': True,
+            'cross_cut': ('rjr_Ms', '>', 1.0)    # Require Ms > 1 TeV when plotting Rs
         },
         # SV variables for data/MC comparison plots
         'HadronicSV_mass': {
@@ -47,7 +49,7 @@ class AnalysisConfig:
             'name': 'had_dxysig',
             'label': 'd_{xy}/#sigma_{d_{xy}}',
             'bins': 25,
-            'range': (0, 1000),
+            'range': (0, 10000),
             'scale': 1.0,
             'is_vector': True
         },
@@ -218,8 +220,8 @@ class AnalysisConfig:
         'baseLinePhoton_WTimeSig': {
             'name': 'photon_wtimesig',
             'label': 't_{#gamma}^{w}/#sigma_{t}',
-            'bins': 50,
-            'range': (-3, 15),
+            'bins': 60,
+            'range': (-5, 10),
             'scale': 1.0,
             'is_vector': True,
             'mc_only': False
@@ -227,8 +229,8 @@ class AnalysisConfig:
         'baseLinePhoton_GenTimeSig': {
             'name': 'photon_gentimesig',
             'label': 't_{#gamma}^{gen}/#sigma_{t}',
-            'bins': 50,
-            'range': (-3, 15),
+            'bins': 60,
+            'range': (-5, 10),
             'scale': 1.0,
             'is_vector': True,
             'mc_only': True
@@ -236,8 +238,8 @@ class AnalysisConfig:
         'baseLinePhoton_GenLabTimeSig': {
             'name': 'photon_genlabsig',
             'label': 't_{#gamma,lab}^{gen}/#sigma_{t}',
-            'bins': 50,
-            'range': (-3, 15),
+            'bins': 60,
+            'range': (-5, 10),
             'scale': 1.0,
             'is_vector': True,
             'mc_only': True

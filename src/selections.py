@@ -49,6 +49,14 @@ class FinalStateResolver:
         """
 
         # ------------------------------------------------------------------ #
+        # OR-combined flags: label each part and join with ' | '              #
+        # ------------------------------------------------------------------ #
+        if '|' in final_state:
+            parts = [FinalStateResolver.format_sv_label(p.strip()) for p in final_state.split('|')]
+            # Keep "Region: " prefix from the first part only
+            return parts[0] + ''.join(' | ' + p.replace('Region: ', '') for p in parts[1:])
+
+        # ------------------------------------------------------------------ #
         # Photon path                                                          #
         # ------------------------------------------------------------------ #
         if "NPho" in final_state:
@@ -72,19 +80,37 @@ class FinalStateResolver:
                 pho_region = f"#gamma^{{{sel}}}" if sel else "#gamma"
 
             # Optional SV component (mixed photon+SV flags)
+            # Parse CR/SR and L/T from the substring *after* the NHad/NLep
+            # token so we don't accidentally pick up the photon region's keyword.
             sv_part = ""
             if "NHad" in final_state:
                 sv_count = ""
                 had_match = re.search(r'NHad(\d+)', final_state)
                 if had_match and int(had_match.group(1)) >= 2:
                     sv_count = "2"
-                sv_part = f" + {sv_count}SV_{{hh}}"
+                sv_suffix = final_state[had_match.start():]
+                if "CR" in sv_suffix:
+                    sv_sel = "CR,L" if "Loose" in sv_suffix else "CR,T"
+                elif "SR" in sv_suffix:
+                    sv_sel = "SR,L" if "Loose" in sv_suffix else "SR,T"
+                else:
+                    sv_sel = ""
+                sv_sel_str = f"^{{{sv_sel}}}" if sv_sel else ""
+                sv_part = f" + {sv_count}SV_{{hh}}{sv_sel_str}"
             elif "NLep" in final_state:
                 sv_count = ""
                 lep_match = re.search(r'NLep(\d+)', final_state)
                 if lep_match and int(lep_match.group(1)) >= 2:
                     sv_count = "2"
-                sv_part = f" + {sv_count}SV_{{\\ell\\ell}}"
+                sv_suffix = final_state[lep_match.start():]
+                if "CR" in sv_suffix:
+                    sv_sel = "CR,L" if "Loose" in sv_suffix else "CR,T"
+                elif "SR" in sv_suffix:
+                    sv_sel = "SR,L" if "Loose" in sv_suffix else "SR,T"
+                else:
+                    sv_sel = ""
+                sv_sel_str = f"^{{{sv_sel}}}" if sv_sel else ""
+                sv_part = f" + {sv_count}SV_{{\\ell\\ell}}{sv_sel_str}"
 
             return f"Region: {pho_count}{pho_region}{sv_part}"
 

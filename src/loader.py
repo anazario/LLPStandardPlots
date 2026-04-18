@@ -215,8 +215,10 @@ class DataLoader:
         self._track_loading(event_flags=event_flags, custom_cuts=custom_cuts, is_data=is_data, file_count=len(file_paths))
         # branches to load - use mode-aware branch selection
         branches = self._get_branches_for_mode()
-        # Add flag branches and selection manager flags
-        branches.extend(event_flags)
+        # Add flag branches, expanding '+'(AND) and '|'(OR) operators into components
+        for flag in event_flags:
+            for or_part in flag.split('|'):
+                branches.extend(f.strip() for f in or_part.split('+'))
         branches.extend(self.selection_manager.flags)
         
         # Initialize data structures
@@ -248,14 +250,35 @@ class DataLoader:
                         if flag in data:
                             base_mask &= (data[flag] == 1)
 
-                    # Process event flags
+                    # Process event flags ('|' = OR, '+' = AND, AND binds tighter)
                     for fs_flag in event_flags:
-                        if fs_flag not in data:
+                        or_parts = [p.strip() for p in fs_flag.split('|')]
+                        flag_mask = np.zeros(n_events, dtype=bool)
+                        all_missing = True
+
+                        for or_part in or_parts:
+                            sub_flags = [f.strip() for f in or_part.split('+')]
+                            missing = [sf for sf in sub_flags if sf not in data]
+                            if missing:
+                                print(f"  Warning: Flag(s) {missing} not found in {file_path}"
+                                      f" — skipping OR part '{or_part}'")
+                                continue
+                            all_missing = False
+                            and_mask = np.ones(n_events, dtype=bool)
+                            for sf in sub_flags:
+                                and_mask &= (data[sf] == 1)
+                            flag_mask |= and_mask
+
+                        if all_missing:
                             continue
 
-                        combined_mask = base_mask & (data[fs_flag] == 1)
+                        combined_mask = base_mask & flag_mask
+                        n_flag = int(np.sum(flag_mask))
+                        n_pass = int(np.sum(combined_mask))
 
-                        if np.sum(combined_mask) == 0:
+                        if n_pass == 0:
+                            print(f"  Warning: 0 events pass baseline cuts for '{fs_flag}' in {file_path} "
+                                  f"({n_flag} passed the flag(s) before baseline cuts)")
                             continue
 
                         extracted_vars = self._extract_values(data, combined_mask, is_data)
@@ -263,6 +286,9 @@ class DataLoader:
 
                         if file_data:
                             event_data[fs_flag][file_path] = file_data
+                        else:
+                            print(f"  Warning: Events passed '{fs_flag}' and baseline cuts but failed "
+                                  f"mode validation (e.g. rjrPTS cut) in {file_path}")
                     
                     # Process custom cuts
                     for i, custom_cut in enumerate(custom_cuts):
@@ -366,6 +392,17 @@ class DataLoader:
                     if len(data[var_key][idx]) > 0:
                         raw_val = data[var_key][idx][0]
                         scaled_val = raw_val * var_config['scale']
+
+                        # Apply cross-cut on the paired RJR variable if defined
+                        cross_cut = var_config.get('cross_cut')
+                        if cross_cut:
+                            other_branch, op, threshold = cross_cut
+                            other_scale = AnalysisConfig.VARIABLES[other_branch]['scale']
+                            if (other_branch in data and len(data[other_branch][idx]) > 0):
+                                other_val = data[other_branch][idx][0] * other_scale
+                                if not (other_val > threshold if op == '>' else other_val < threshold):
+                                    continue
+
                         extracted_data[var_key].append(scaled_val)
                         extracted_data[f'{var_key}_weights'].append(base_weight)
 

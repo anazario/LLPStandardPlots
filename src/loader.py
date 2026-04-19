@@ -13,11 +13,12 @@ def _load_file_task(args):
 
 class DataLoader:
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
-                 analysis_mode='uncompressed', isr_pt_cut=None):
+                 analysis_mode='uncompressed', isr_pt_cut=None, max_workers=None):
         self.tree_name = tree_name
         self.luminosity = luminosity
         self.analysis_mode = analysis_mode
         self.isr_pt_cut = isr_pt_cut
+        self.max_workers = max_workers
         self.selection_manager = SelectionManager()
         self.loading_summary = {
             'data_types_loaded': set(),
@@ -233,7 +234,7 @@ class DataLoader:
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
         
-        n_workers = min(os.cpu_count() or 4, len(file_paths), 8)
+        n_workers = min(self.max_workers or (os.cpu_count() or 4), len(file_paths), 8)
 
         if len(file_paths) > 1 and n_workers > 1:
             tasks = [(self, fp, branches, event_flags, custom_cuts, is_data) for fp in file_paths]

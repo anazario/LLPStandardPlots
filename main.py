@@ -250,6 +250,8 @@ def parse_arguments():
     # Output Format Options
     parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root',
                        help='Output format: root (default), pdf, png, or eps')
+    parser.add_argument('-j', '--workers', type=int, default=None,
+                        help='Parallel file-loading workers (default: auto)')
     parser.add_argument('--save-hists', action='store_true', default=False,
                        help='(ROOT format only) Also write individual histogram objects alongside canvases')
     
@@ -351,7 +353,8 @@ def main():
     style.set_style()
 
     loader = DataLoader(args.tree, luminosity=args.lumi,
-                       analysis_mode=analysis_mode, isr_pt_cut=isr_pt_cut)
+                       analysis_mode=analysis_mode, isr_pt_cut=isr_pt_cut,
+                       max_workers=args.workers)
     plotter1d = Plotter1D(style)
     plotter2d = Plotter2D(style)
     plotter_datamc = PlotterDataMC(style)

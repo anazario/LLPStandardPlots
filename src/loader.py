@@ -1,7 +1,15 @@
 import uproot
 import numpy as np
+import concurrent.futures
+import os
 from src.selections import SelectionManager
 from src.config import AnalysisConfig, AnalysisMode, ModeConfig
+
+
+def _load_file_task(args):
+    """Module-level worker for ProcessPoolExecutor — loads one file."""
+    loader, file_path, branches, event_flags, custom_cuts, is_data = args
+    return loader._load_one_file(file_path, branches, event_flags, custom_cuts, is_data)
 
 class DataLoader:
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
@@ -225,118 +233,136 @@ class DataLoader:
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
         
-        for file_path in file_paths:
-            print(f"Loading {file_path}...")
+        n_workers = min(os.cpu_count() or 4, len(file_paths), 8)
+
+        if len(file_paths) > 1 and n_workers > 1:
+            tasks = [(self, fp, branches, event_flags, custom_cuts, is_data) for fp in file_paths]
             try:
-                with uproot.open(file_path) as f:
-                    if self.tree_name not in f:
-                        print(f"  Warning: Tree {self.tree_name} not found in {file_path}")
-                        continue
-                        
-                    tree = f[self.tree_name]
-                    # Get all available branches first
-                    available_branches = [b for b in branches if b in tree]
-                    data = tree.arrays(available_branches, library='np')
-
-                    n_events = len(data['evtFillWgt'])
-                    base_mask = np.ones(n_events, dtype=bool)
-
-                    # Scalar cuts using Config
-                    base_mask &= (data['selCMet'] > AnalysisConfig.MET_CUT)
-                    base_mask &= (data['evtFillWgt'] < AnalysisConfig.EVT_WGT_CUT)
-
-                    # Flag cuts (filters)
-                    for flag in self.selection_manager.flags:
-                        if flag in data:
-                            base_mask &= (data[flag] == 1)
-
-                    # Process event flags ('|' = OR, '+' = AND, AND binds tighter)
-                    for fs_flag in event_flags:
-                        or_parts = [p.strip() for p in fs_flag.split('|')]
-                        flag_mask = np.zeros(n_events, dtype=bool)
-                        all_missing = True
-
-                        for or_part in or_parts:
-                            sub_flags = [f.strip() for f in or_part.split('+')]
-                            missing = [sf for sf in sub_flags if sf not in data]
-                            if missing:
-                                print(f"  Warning: Flag(s) {missing} not found in {file_path}"
-                                      f" — skipping OR part '{or_part}'")
-                                continue
-                            all_missing = False
-                            and_mask = np.ones(n_events, dtype=bool)
-                            for sf in sub_flags:
-                                and_mask &= (data[sf] == 1)
-                            flag_mask |= and_mask
-
-                        if all_missing:
-                            continue
-
-                        combined_mask = base_mask & flag_mask
-                        n_flag = int(np.sum(flag_mask))
-                        n_pass = int(np.sum(combined_mask))
-
-                        if n_pass == 0:
-                            print(f"  Warning: 0 events pass baseline cuts for '{fs_flag}' in {file_path} "
-                                  f"({n_flag} passed the flag(s) before baseline cuts)")
-                            continue
-
-                        extracted_vars = self._extract_values(data, combined_mask, is_data)
-                        file_data = self._process_extracted_data(extracted_vars)
-
-                        if file_data:
-                            event_data[fs_flag][file_path] = file_data
-                        else:
-                            print(f"  Warning: Events passed '{fs_flag}' and baseline cuts but failed "
-                                  f"mode validation (e.g. rjrPTS cut) in {file_path}")
-                    
-                    # Process custom cuts
-                    for i, custom_cut in enumerate(custom_cuts):
-                        custom_region_name = f"CustomRegion{i+1}"
-                        try:
-                            # Get the arrays we need
-                            nSelPhotons = data.get("nSelPhotons", np.zeros(n_events))
-                            SV_nHadronic = data.get("SV_nHadronic", np.zeros(n_events))
-                            SV_nLeptonic = data.get("SV_nLeptonic", np.zeros(n_events))
-                            selCMet = data.get("selCMet", np.zeros(n_events))
-
-                            # Build variables dict for cut parsing
-                            cut_variables = {
-                                'nSelPhotons': nSelPhotons,
-                                'SV_nHadronic': SV_nHadronic,
-                                'SV_nLeptonic': SV_nLeptonic,
-                                'selCMet': selCMet
-                            }
-
-                            # Add ISR variables when in compressed mode
-                            if self.analysis_mode == AnalysisMode.COMPRESSED:
-                                for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
-                                               'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
-                                               'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
-                                    if isr_var in data:
-                                        cut_variables[isr_var] = data[isr_var]
-
-                            # Parse and evaluate the custom cut manually to avoid eval() issues
-                            custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
-                            
-                            combined_mask = base_mask & custom_mask
-                        except Exception as e:
-                            print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
-                            continue
-                        
-                        if np.sum(combined_mask) == 0:
-                            continue
-                            
-                        extracted_vars = self._extract_values(data, combined_mask, is_data)
-                        file_data = self._process_extracted_data(extracted_vars)
-                        
-                        if file_data:
-                            custom_data[custom_region_name][file_path] = file_data
-                            
+                with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                    results = list(executor.map(_load_file_task, tasks))
             except Exception as e:
-                print(f"  Error loading {file_path}: {e}")
-                
+                print(f"Warning: parallel loading failed ({e}), falling back to sequential")
+                results = [self._load_one_file(fp, branches, event_flags, custom_cuts, is_data)
+                           for fp in file_paths]
+        else:
+            results = [self._load_one_file(fp, branches, event_flags, custom_cuts, is_data)
+                       for fp in file_paths]
+
+        for file_path, file_event, file_custom in results:
+            for flag, fdata in file_event.items():
+                event_data[flag][file_path] = fdata
+            for region, fdata in file_custom.items():
+                custom_data[region][file_path] = fdata
+
         return event_data, custom_data
+
+    def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data):
+        """Load and process a single file; returns (file_path, event_results, custom_results)."""
+        event_result = {}
+        custom_result = {}
+
+        print(f"Loading {file_path}...")
+        try:
+            with uproot.open(file_path) as f:
+                if self.tree_name not in f:
+                    print(f"  Warning: Tree {self.tree_name} not found in {file_path}")
+                    return file_path, event_result, custom_result
+
+                tree = f[self.tree_name]
+                available_branches = [b for b in branches if b in tree]
+                cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
+                            f" (evtFillWgt < {AnalysisConfig.EVT_WGT_CUT})")
+                data = tree.arrays(available_branches, cut=cut_expr, library='np')
+
+                n_events = len(data['evtFillWgt'])
+                base_mask = np.ones(n_events, dtype=bool)
+
+                for flag in self.selection_manager.flags:
+                    if flag in data:
+                        base_mask &= (data[flag] == 1)
+
+                # Process event flags ('|' = OR, '+' = AND, AND binds tighter)
+                for fs_flag in event_flags:
+                    or_parts = [p.strip() for p in fs_flag.split('|')]
+                    flag_mask = np.zeros(n_events, dtype=bool)
+                    all_missing = True
+
+                    for or_part in or_parts:
+                        sub_flags = [f.strip() for f in or_part.split('+')]
+                        missing = [sf for sf in sub_flags if sf not in data]
+                        if missing:
+                            print(f"  Warning: Flag(s) {missing} not found in {file_path}"
+                                  f" — skipping OR part '{or_part}'")
+                            continue
+                        all_missing = False
+                        and_mask = np.ones(n_events, dtype=bool)
+                        for sf in sub_flags:
+                            and_mask &= (data[sf] == 1)
+                        flag_mask |= and_mask
+
+                    if all_missing:
+                        continue
+
+                    combined_mask = base_mask & flag_mask
+                    n_flag = int(np.sum(flag_mask))
+                    n_pass = int(np.sum(combined_mask))
+
+                    if n_pass == 0:
+                        print(f"  Warning: 0 events pass baseline cuts for '{fs_flag}' in {file_path} "
+                              f"({n_flag} passed the flag(s) before baseline cuts)")
+                        continue
+
+                    extracted_vars = self._extract_values(data, combined_mask, is_data)
+                    file_data = self._process_extracted_data(extracted_vars)
+
+                    if file_data:
+                        event_result[fs_flag] = file_data
+                    else:
+                        print(f"  Warning: Events passed '{fs_flag}' and baseline cuts but failed "
+                              f"mode validation (e.g. rjrPTS cut) in {file_path}")
+
+                # Process custom cuts
+                for i, custom_cut in enumerate(custom_cuts):
+                    custom_region_name = f"CustomRegion{i+1}"
+                    try:
+                        nSelPhotons = data.get("nSelPhotons", np.zeros(n_events))
+                        SV_nHadronic = data.get("SV_nHadronic", np.zeros(n_events))
+                        SV_nLeptonic = data.get("SV_nLeptonic", np.zeros(n_events))
+                        selCMet = data.get("selCMet", np.zeros(n_events))
+
+                        cut_variables = {
+                            'nSelPhotons': nSelPhotons,
+                            'SV_nHadronic': SV_nHadronic,
+                            'SV_nLeptonic': SV_nLeptonic,
+                            'selCMet': selCMet
+                        }
+
+                        if self.analysis_mode == AnalysisMode.COMPRESSED:
+                            for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
+                                           'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
+                                           'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
+                                if isr_var in data:
+                                    cut_variables[isr_var] = data[isr_var]
+
+                        custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
+                        combined_mask = base_mask & custom_mask
+                    except Exception as e:
+                        print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
+                        continue
+
+                    if np.sum(combined_mask) == 0:
+                        continue
+
+                    extracted_vars = self._extract_values(data, combined_mask, is_data)
+                    file_data = self._process_extracted_data(extracted_vars)
+
+                    if file_data:
+                        custom_result[custom_region_name] = file_data
+
+        except Exception as e:
+            print(f"  Error loading {file_path}: {e}")
+
+        return file_path, event_result, custom_result
 
     def _extract_values(self, data, mask, is_data=False):
         """Helper method to extract values for both event flags and custom cuts."""

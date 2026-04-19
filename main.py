@@ -17,6 +17,8 @@ from src.selections import FinalStateResolver
 from src.utils import parse_signal_name, parse_background_name
 
 from src.config import AnalysisConfig, AnalysisMode, ModeConfig
+from src.input_config import (load_input_config, apply_config_to_args,
+                               unique_files_from_groups, assemble_grouped_map)
 
 def expand_input_paths(input_paths):
     """
@@ -203,7 +205,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Standard Plots CLI')
     
     # Input Files
-    parser.add_argument('--signal', nargs='+', required=True, help='Signal ROOT files or directories containing ROOT files')
+    parser.add_argument('--signal', nargs='+', default=[], help='Signal ROOT files or directories containing ROOT files')
     parser.add_argument('--background', nargs='+', default=[], help='Background ROOT files or directories containing ROOT files')
     parser.add_argument('--data', nargs='*', help='Data ROOT files or directories containing ROOT files (for data/MC comparison plots)')
     parser.add_argument('--output', default='standard_plots.root', help='Output ROOT file')
@@ -241,6 +243,10 @@ def parse_arguments():
                        help='Custom labels for custom cut regions (1:1 with non-event-flag entries in --flags)')
     
     
+    # Input config
+    parser.add_argument('--input-config', default=None, metavar='FILE',
+                       help='YAML config file specifying input files and optional run parameters')
+
     # Output Format Options
     parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root',
                        help='Output format: root (default), pdf, png, or eps')
@@ -251,6 +257,23 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+
+    # Load YAML input config if provided
+    bg_groups = None
+    data_groups = None
+    if args.input_config:
+        config = load_input_config(args.input_config)
+        apply_config_to_args(args, config['overrides'])
+        if not args.signal:
+            args.signal = config['signal_files']
+        if not args.background:
+            bg_groups = config['bg_groups']
+        if not args.data:
+            data_groups = config['data_groups']
+
+    if not args.signal:
+        print("Error: --signal is required when not using --input-config.")
+        sys.exit(1)
 
     # Get mode configuration
     analysis_mode = args.analysis_type
@@ -284,14 +307,19 @@ def main():
     # Expand input paths to handle directories
     try:
         signal_files = expand_input_paths(args.signal)
-        background_files = expand_input_paths(args.background) if args.background else []
-        data_files = expand_input_paths(args.data) if args.data else []
+        if bg_groups is None:
+            bg_groups = [{'name': None, 'files': expand_input_paths(args.background) if args.background else [], 'combine': False}]
+        if data_groups is None:
+            data_groups = [{'name': None, 'files': expand_input_paths(args.data) if args.data else [], 'combine': False}]
     except (FileNotFoundError, Exception) as e:
         print(f"Error: {e}")
         sys.exit(1)
 
+    all_bg_files = unique_files_from_groups(bg_groups)
+    all_data_files = unique_files_from_groups(data_groups)
+
     # Handle unblinding warning if requested
-    if args.unblind and data_files:
+    if args.unblind and all_data_files:
         if not prompt_unblind_warning():
             print("Exiting...")
             return
@@ -336,30 +364,36 @@ def main():
     
     print(f"Loading data for {len(event_flags)} event flags and {len(custom_cuts)} custom cuts...")
     
-    # Use unified loader to load everything in one pass
+    # Load each category once (background files deduplicated across groups)
     sig_data_map, custom_sig_data_map = loader.load_data_unified(signal_files, event_flags, custom_cuts)
-    bg_data_map, custom_bg_data_map = loader.load_data_unified(background_files, event_flags, custom_cuts)
-    
+    bg_flat_map, custom_bg_flat_map = loader.load_data_unified(all_bg_files, event_flags, custom_cuts)
+
     # Load data files if provided.
     # --data-flag can be either an event flag ("pass...") or a custom cut string.
     # We fold it into the appropriate list so everything loads in one pass.
-    data_data_map, custom_data_data_map = {}, {}
+    data_flat_map, custom_data_flat_map = {}, {}
     data_flag_is_event = args.data_flag and is_event_flag(args.data_flag)
     data_flag_key = None   # key used to retrieve cr_data_collection later
-    if data_files:
+    if all_data_files:
         data_event_flags = event_flags.copy()
         data_custom_cuts = custom_cuts.copy()
         if args.data_flag:
             if data_flag_is_event:
                 if args.data_flag not in data_event_flags:
                     data_event_flags.append(args.data_flag)
-                data_flag_key = args.data_flag          # key in data_data_map
+                data_flag_key = args.data_flag          # key in data_flat_map
             else:
                 data_custom_cuts.append(args.data_flag)
-                data_flag_key = f'CustomRegion{len(data_custom_cuts)}'  # key in custom_data_data_map
-        data_data_map, custom_data_data_map = loader.load_data_unified(
-            data_files, data_event_flags, data_custom_cuts, is_data=True
+                data_flag_key = f'CustomRegion{len(data_custom_cuts)}'  # key in custom_data_flat_map
+        data_flat_map, custom_data_flat_map = loader.load_data_unified(
+            all_data_files, data_event_flags, data_custom_cuts, is_data=True
         )
+
+    # Assemble grouped maps (combines files within each group where combine=True)
+    bg_data_map = assemble_grouped_map(bg_flat_map, bg_groups, loader.combine_data)
+    custom_bg_data_map = assemble_grouped_map(custom_bg_flat_map, bg_groups, loader.combine_data)
+    data_data_map = assemble_grouped_map(data_flat_map, data_groups, loader.combine_data)
+    custom_data_data_map = assemble_grouped_map(custom_data_flat_map, data_groups, loader.combine_data)
     
     # Print comprehensive data loading summary
     loader.print_comprehensive_summary()
@@ -456,7 +490,7 @@ def main():
         
         # Retrieve CR data collection for --data-flag (shared by 2D and cr_sig blocks)
         cr_data_collection = {}
-        if data_files and args.data_flag:
+        if all_data_files and args.data_flag:
             if data_flag_is_event:
                 cr_data_collection = data_data_map.get(data_flag_key, {})
             else:
@@ -756,7 +790,7 @@ def main():
                 fs_dir.cd()
 
         # --- CR Data vs SR Signal Plots ---
-        do_cr_sig = ('cr_sig' in args.plots or 'all' in args.plots) and args.data_flag and data_files
+        do_cr_sig = ('cr_sig' in args.plots or 'all' in args.plots) and args.data_flag and all_data_files
         if do_cr_sig and current_sig_data:
             # cr_data_collection already computed above
             if not cr_data_collection:

@@ -1,0 +1,39 @@
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v49
+
+lumi: 200.0
+energy: 13.6
+flags: [passNHad1SelectionCRLoose, passNLep1SelectionCRLoose]
+plots: [ratio]
+format: pdf
+output: datamc_v49_run2run3
+
+signal:
+  - SMS_SVHPM100_v34_gogoGZ_FULLMINI_mGl-2500_mN2-1200_mN1-500_ct0p1_rjrskim.root
+
+background:
+  - name: QCD multijets
+    files:
+      - QCD_R18_*
+  - name: W+jets
+    files:
+      - WJets_R18_*
+  - name: Z+jets
+    files:
+      - ZJets_R18_*
+  - name: t#bar{t}+jets
+    files:
+      - TTJets_R18_*
+  - name: "#gamma+jets"
+    files:
+      - GJets_R18_*
+
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_R16_*
+      - MET_R17_*
+      - MET_R18_*
+      - JetMET_R22_*
+      - JetMET_R23_*
+      - JetMET_R24_*

@@ -1,0 +1,17 @@
+lumi: 400.0
+energy: 13.6
+flags: [passNHad1SelectionSRTight]
+plots: [1d, 2d]
+format: eps
+output: test_output
+
+signal:
+  - ../FlexiblePlotter/root/mGl-2000_mN2-400_mN1-200_ct0p1_gogoZ_rjrskim_v45.root
+
+background:
+  - name: QCD
+    files:
+      - ../FlexiblePlotter/root/QCD_rjrskim_v45.root
+  - name: W+jets
+    files:
+      - ../FlexiblePlotter/root/WJets_rjrskim_v45.root

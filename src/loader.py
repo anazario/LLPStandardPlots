@@ -11,6 +11,17 @@ def _load_file_task(args):
     loader, file_path, branches, event_flags, custom_cuts, is_data = args
     return loader._load_one_file(file_path, branches, event_flags, custom_cuts, is_data)
 
+
+def _merge_chunks(chunks):
+    """Concatenate a list of extracted_vars dicts into one."""
+    if not chunks:
+        return {}
+    merged = {}
+    for key in chunks[0]:
+        arrays = [c[key] for c in chunks if key in c and len(c[key]) > 0]
+        merged[key] = np.concatenate(arrays) if arrays else np.array([])
+    return merged
+
 class DataLoader:
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
                  analysis_mode='uncompressed', isr_pt_cut=None, max_workers=None):
@@ -258,7 +269,9 @@ class DataLoader:
         return event_data, custom_data
 
     def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data):
-        """Load and process a single file; returns (file_path, event_results, custom_results)."""
+        """Load and process a single file in chunks to bound memory usage."""
+        CHUNK_SIZE = 100_000
+
         event_result = {}
         custom_result = {}
 
@@ -273,92 +286,101 @@ class DataLoader:
                 available_branches = [b for b in branches if b in tree]
                 cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
                             f" (evtFillWgt < {AnalysisConfig.EVT_WGT_CUT})")
-                data = tree.arrays(available_branches, cut=cut_expr, library='np')
 
-                n_events = len(data['evtFillWgt'])
-                base_mask = np.ones(n_events, dtype=bool)
+                event_chunks = {flag: [] for flag in event_flags}
+                custom_chunks = {f"CustomRegion{i+1}": [] for i in range(len(custom_cuts))}
+                flag_counts  = {flag: 0 for flag in event_flags}
+                pass_counts  = {flag: 0 for flag in event_flags}
 
-                for flag in self.selection_manager.flags:
-                    if flag in data:
-                        base_mask &= (data[flag] == 1)
+                for chunk in tree.iterate(available_branches, cut=cut_expr,
+                                          library='np', step_size=CHUNK_SIZE):
+                    n_events = len(chunk['evtFillWgt'])
+                    base_mask = np.ones(n_events, dtype=bool)
 
-                # Process event flags ('|' = OR, '+' = AND, AND binds tighter)
-                for fs_flag in event_flags:
-                    or_parts = [p.strip() for p in fs_flag.split('|')]
-                    flag_mask = np.zeros(n_events, dtype=bool)
-                    all_missing = True
+                    for flag in self.selection_manager.flags:
+                        if flag in chunk:
+                            base_mask &= (chunk[flag] == 1)
 
-                    for or_part in or_parts:
-                        sub_flags = [f.strip() for f in or_part.split('+')]
-                        missing = [sf for sf in sub_flags if sf not in data]
-                        if missing:
-                            print(f"  Warning: Flag(s) {missing} not found in {file_path}"
-                                  f" — skipping OR part '{or_part}'")
+                    # Process event flags ('|' = OR, '+' = AND)
+                    for fs_flag in event_flags:
+                        or_parts = [p.strip() for p in fs_flag.split('|')]
+                        flag_mask = np.zeros(n_events, dtype=bool)
+                        all_missing = True
+
+                        for or_part in or_parts:
+                            sub_flags = [f.strip() for f in or_part.split('+')]
+                            if any(sf not in chunk for sf in sub_flags):
+                                continue
+                            all_missing = False
+                            and_mask = np.ones(n_events, dtype=bool)
+                            for sf in sub_flags:
+                                and_mask &= (chunk[sf] == 1)
+                            flag_mask |= and_mask
+
+                        if all_missing:
                             continue
-                        all_missing = False
-                        and_mask = np.ones(n_events, dtype=bool)
-                        for sf in sub_flags:
-                            and_mask &= (data[sf] == 1)
-                        flag_mask |= and_mask
 
-                    if all_missing:
-                        continue
+                        combined_mask = base_mask & flag_mask
+                        flag_counts[fs_flag] += int(np.sum(flag_mask))
+                        pass_counts[fs_flag] += int(np.sum(combined_mask))
 
-                    combined_mask = base_mask & flag_mask
-                    n_flag = int(np.sum(flag_mask))
-                    n_pass = int(np.sum(combined_mask))
+                        if np.sum(combined_mask) == 0:
+                            continue
 
-                    if n_pass == 0:
+                        extracted_vars = self._extract_values(chunk, combined_mask, is_data)
+                        if extracted_vars:
+                            event_chunks[fs_flag].append(extracted_vars)
+
+                    # Process custom cuts
+                    for i, custom_cut in enumerate(custom_cuts):
+                        custom_region_name = f"CustomRegion{i+1}"
+                        try:
+                            cut_variables = {
+                                'nSelPhotons': chunk.get("nSelPhotons", np.zeros(n_events)),
+                                'SV_nHadronic': chunk.get("SV_nHadronic", np.zeros(n_events)),
+                                'SV_nLeptonic': chunk.get("SV_nLeptonic", np.zeros(n_events)),
+                                'selCMet':      chunk.get("selCMet",      np.zeros(n_events)),
+                            }
+                            if self.analysis_mode == AnalysisMode.COMPRESSED:
+                                for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
+                                               'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
+                                               'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
+                                    if isr_var in chunk:
+                                        cut_variables[isr_var] = chunk[isr_var]
+                            custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
+                            combined_mask = base_mask & custom_mask
+                        except Exception as e:
+                            print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
+                            continue
+
+                        if np.sum(combined_mask) == 0:
+                            continue
+                        extracted_vars = self._extract_values(chunk, combined_mask, is_data)
+                        if extracted_vars:
+                            custom_chunks[custom_region_name].append(extracted_vars)
+
+                # Merge chunks
+                for fs_flag in event_flags:
+                    if pass_counts[fs_flag] == 0:
                         print(f"  Warning: 0 events pass baseline cuts for '{fs_flag}' in {file_path} "
-                              f"({n_flag} passed the flag(s) before baseline cuts)")
+                              f"({flag_counts[fs_flag]} passed the flag(s) before baseline cuts)")
                         continue
-
-                    extracted_vars = self._extract_values(data, combined_mask, is_data)
-                    file_data = self._process_extracted_data(extracted_vars)
-
+                    if not event_chunks[fs_flag]:
+                        continue
+                    file_data = self._process_extracted_data(_merge_chunks(event_chunks[fs_flag]))
                     if file_data:
                         event_result[fs_flag] = file_data
                     else:
                         print(f"  Warning: Events passed '{fs_flag}' and baseline cuts but failed "
-                              f"mode validation (e.g. rjrPTS cut) in {file_path}")
+                              f"mode validation in {file_path}")
 
-                # Process custom cuts
-                for i, custom_cut in enumerate(custom_cuts):
-                    custom_region_name = f"CustomRegion{i+1}"
-                    try:
-                        nSelPhotons = data.get("nSelPhotons", np.zeros(n_events))
-                        SV_nHadronic = data.get("SV_nHadronic", np.zeros(n_events))
-                        SV_nLeptonic = data.get("SV_nLeptonic", np.zeros(n_events))
-                        selCMet = data.get("selCMet", np.zeros(n_events))
-
-                        cut_variables = {
-                            'nSelPhotons': nSelPhotons,
-                            'SV_nHadronic': SV_nHadronic,
-                            'SV_nLeptonic': SV_nLeptonic,
-                            'selCMet': selCMet
-                        }
-
-                        if self.analysis_mode == AnalysisMode.COMPRESSED:
-                            for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
-                                           'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
-                                           'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
-                                if isr_var in data:
-                                    cut_variables[isr_var] = data[isr_var]
-
-                        custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
-                        combined_mask = base_mask & custom_mask
-                    except Exception as e:
-                        print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
+                for i in range(len(custom_cuts)):
+                    region = f"CustomRegion{i+1}"
+                    if not custom_chunks[region]:
                         continue
-
-                    if np.sum(combined_mask) == 0:
-                        continue
-
-                    extracted_vars = self._extract_values(data, combined_mask, is_data)
-                    file_data = self._process_extracted_data(extracted_vars)
-
+                    file_data = self._process_extracted_data(_merge_chunks(custom_chunks[region]))
                     if file_data:
-                        custom_result[custom_region_name] = file_data
+                        custom_result[region] = file_data
 
         except Exception as e:
             print(f"  Error loading {file_path}: {e}")

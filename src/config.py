@@ -49,7 +49,7 @@ class AnalysisConfig:
             'name': 'had_dxysig',
             'label': 'd_{xy}/#sigma_{d_{xy}}',
             'bins': 25,
-            'range': (0, 10000),
+            'range': (0, 1000),
             'scale': 1.0,
             'is_vector': True
         },

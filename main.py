@@ -201,6 +201,39 @@ def is_signal_region(flag_string):
     # SR = Signal Region (blind data), CR = Control Region (show data)
     return 'SR' in flag_string
 
+def _is_sv_region(flag):
+    """Return True for any SV-based selection flag (hadronic or leptonic)."""
+    return "NHad" in flag or "NLep" in flag
+
+def _merge_qcd_gjets(bg_data, combine_fn):
+    """Merge GJets entries into QCD for SV region plots.
+
+    Both processes appear together under the QCD label/color in the legend.
+    Only merges when both QCD and GJets entries are present.
+    """
+    qcd_keys, gjets_keys, other = [], [], {}
+    for key, data in bg_data.items():
+        parsed = parse_background_name(key)
+        if parsed == "QCD multijets":
+            qcd_keys.append(key)
+        elif "gamma" in parsed:
+            gjets_keys.append(key)
+        else:
+            other[key] = data
+
+    if not qcd_keys or not gjets_keys:
+        return bg_data  # Nothing to merge if either is absent
+
+    to_merge = {k: bg_data[k] for k in qcd_keys + gjets_keys}
+    merged = combine_fn(to_merge)
+    if merged is None:
+        return bg_data
+
+    # Keep the first QCD key so downstream name/color lookup stays correct
+    result = {qcd_keys[0]: merged}
+    result.update(other)
+    return result
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Standard Plots CLI')
     
@@ -252,7 +285,9 @@ def parse_arguments():
                        help='Output format: root (default), pdf, png, or eps')
     parser.add_argument('--save-hists', action='store_true', default=False,
                        help='(ROOT format only) Also write individual histogram objects alongside canvases')
-    
+    parser.add_argument('--no-merge-qcd-gjets', action='store_true', default=False,
+                       help='Disable automatic QCD+GJets merging in SV regions (merging is on by default for SV flags)')
+
     return parser.parse_args()
 
 def main():
@@ -440,6 +475,11 @@ def main():
         flag = item['name']
         current_sig_data = item['sig_data'] 
         current_bg_data = item['bg_data']
+
+        # Merge QCD and GJets into a single QCD entry for SV regions by default
+        if _is_sv_region(flag) and not args.no_merge_qcd_gjets:
+            current_bg_data = _merge_qcd_gjets(current_bg_data, loader.combine_data)
+
         show_region_label = item['show_region_label']
         if item['data_source'] == 'custom_cut':
             print(f"\nProcessing {item['data_source']}: {flag} ('{item['original_cut']}')")

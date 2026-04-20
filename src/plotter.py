@@ -793,10 +793,15 @@ class PlotterDataMC(PlotterBase):
     
     def _get_background_color_index(self, filename):
         """Get the color index for a specific background based on physics process."""
+        import re
         from src.utils import parse_background_name
-        
+
+        def _normalize(s):
+            # Pad + with spaces and collapse whitespace so "W+jets" == "W + jets"
+            return re.sub(r'\s+', ' ', re.sub(r'\s*\+\s*', ' + ', s)).strip()
+
         bg_name = parse_background_name(filename)
-        
+
         # Background to color mapping (using original hex color indices)
         # QCD=purple, WJets=teal, ZJets=yellow/gold, TTX=red/orange, GJets=pink/rose
         background_color_map = {
@@ -811,8 +816,14 @@ class PlotterDataMC(PlotterBase):
             'Diboson': 1185,              # #2E8B57 - Sea green
             'Single top': 1186,           # #8B4513 - Saddle brown
         }
-        
-        return background_color_map.get(bg_name, 1179)  # Default to purple if not found
+
+        # Try parsed name first, then raw filename (handles YAML group names like "W+jets")
+        for candidate in [bg_name, filename]:
+            color = background_color_map.get(_normalize(candidate))
+            if color is not None:
+                return color
+
+        return 1179  # Default to purple if not found
 
     def _ensure_mc_colors(self):
         """Force recreation of MC colors at specific indices to override palette interference."""

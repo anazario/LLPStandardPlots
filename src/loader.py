@@ -321,6 +321,14 @@ class DataLoader:
                                 'SV_nLeptonic': chunk.get("SV_nLeptonic", np.zeros(n_events)),
                                 'selCMet':      chunk.get("selCMet",      np.zeros(n_events)),
                             }
+                            # Add SV object variables (jagged) as first-element scalars per event
+                            for sv_var in ['HadronicSV_dxySig', 'HadronicSV_mass', 'HadronicSV_dxy',
+                                           'HadronicSV_nTracks', 'LeptonicSV_dxySig',
+                                           'LeptonicSV_mass', 'LeptonicSV_dxy']:
+                                if sv_var in chunk:
+                                    cut_variables[sv_var] = np.array(
+                                        [float(a[0]) if len(a) > 0 else np.nan
+                                         for a in chunk[sv_var]], dtype=float)
                             if self.analysis_mode == AnalysisMode.COMPRESSED:
                                 for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
                                                'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',

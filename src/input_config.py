@@ -62,6 +62,7 @@ _PARSER_DEFAULTS = {
     'tree': 'kuSkimTree',
     'flags': ['passNHad1SelectionSRTight', 'passNLep1SelectionSRTight'],
     'plots': ['all'],
+    'analysis_type': 'uncompressed',
 }
 
 
@@ -147,7 +148,7 @@ def load_input_config(yaml_path):
     bg_groups = _parse_groups(cfg.get('background', []), base_dir)
     data_groups = _parse_groups(cfg.get('data', []), base_dir)
 
-    override_keys = ('lumi', 'energy', 'flags', 'plots', 'format', 'output', 'tree')
+    override_keys = ('lumi', 'energy', 'flags', 'plots', 'format', 'output', 'tree', 'analysis_type')
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
 
     return {

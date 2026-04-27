@@ -342,6 +342,11 @@ class DataLoader:
                 if scalar_prefilter:
                     cut_expr = f"({cut_expr}) & ({scalar_prefilter})"
 
+                if (self.analysis_mode == AnalysisMode.COMPRESSED and
+                        self.isr_pt_cut is not None and
+                        'rjrIsr_PtIsr' in available_branches):
+                    cut_expr += f" & (rjrIsr_PtIsr >= {self.isr_pt_cut})"
+
                 print(f"  tree entries: {n_entries:,}  |  uproot cut: {cut_expr}")
 
                 event_chunks = {flag: [] for flag in event_flags}
@@ -508,11 +513,10 @@ class DataLoader:
                     data['rjrPTS'][idx][0] < AnalysisConfig.RJR_PTS_CUT):
                     passes_validation = True
             else:
-                # Compressed mode: require ISR variables and optionally apply ISR pT cut
-                if 'rjrIsrPTS' in data:
+                # Compressed mode: require rjrIsr_PtIsr and optionally apply ISR pT cut
+                if 'rjrIsr_PtIsr' in data:
                     if self.isr_pt_cut is not None:
-                        # Apply ISR pT cut if specified (skip events below the cut)
-                        if 'rjrIsr_PtIsr' in data and data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut:
+                        if data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut:
                             passes_validation = True
                     else:
                         passes_validation = True

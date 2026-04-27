@@ -303,7 +303,7 @@ class DataLoader:
             if clause_filters:
                 per_cut_filters.append('(' + ' | '.join(f'({c})' for c in clause_filters) + ')')
 
-        return ' & '.join(per_cut_filters) if per_cut_filters else None
+        return ' | '.join(per_cut_filters) if per_cut_filters else None
 
     @staticmethod
     def _rss_mb():

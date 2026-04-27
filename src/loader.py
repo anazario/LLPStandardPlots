@@ -298,6 +298,18 @@ class DataLoader:
 
         return ' & '.join(per_cut_filters) if per_cut_filters else None
 
+    @staticmethod
+    def _rss_mb():
+        """Return current process RSS in MB (Linux /proc; falls back to 0)."""
+        try:
+            with open('/proc/self/status') as fh:
+                for line in fh:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1]) / 1024
+        except Exception:
+            pass
+        return 0
+
     def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data):
         """Load and process a single file in chunks to bound memory usage."""
         CHUNK_SIZE = 100_000
@@ -305,7 +317,7 @@ class DataLoader:
         event_result = {}
         custom_result = {}
 
-        print(f"Loading {file_path}...")
+        print(f"Loading {file_path}...  [RSS {self._rss_mb():.0f} MB]")
         try:
             with uproot.open(file_path) as f:
                 if self.tree_name not in f:
@@ -313,32 +325,38 @@ class DataLoader:
                     return file_path, event_result, custom_result
 
                 tree = f[self.tree_name]
+                n_entries = tree.num_entries
                 available_branches = [b for b in branches if b in tree]
                 cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
                             f" (evtFillWgt < {AnalysisConfig.EVT_WGT_CUT})")
 
-                # Push scalar conditions from custom cuts into uproot's C++-level filter.
-                # e.g. "((SV_nHadronic>=1) & ...) | ((SV_nLeptonic>=1) & ...)" yields
-                # "(SV_nHadronic>=1) | (SV_nLeptonic>=1)" which is a necessary precondition
-                # that eliminates the vast majority of events before they enter Python.
                 scalar_prefilter = self._build_scalar_prefilter(
                     custom_cuts, available_branches, tree)
                 if scalar_prefilter:
                     cut_expr = f"({cut_expr}) & ({scalar_prefilter})"
+
+                print(f"  tree entries: {n_entries:,}  |  uproot cut: {cut_expr}")
 
                 event_chunks = {flag: [] for flag in event_flags}
                 custom_chunks = {f"CustomRegion{i+1}": [] for i in range(len(custom_cuts))}
                 flag_counts  = {flag: 0 for flag in event_flags}
                 pass_counts  = {flag: 0 for flag in event_flags}
 
+                total_loaded = 0
+                total_base   = 0
+                custom_pass  = [0] * len(custom_cuts)
+                custom_stored_events = [0] * len(custom_cuts)
+
                 for chunk in tree.iterate(available_branches, cut=cut_expr,
                                           library='np', step_size=CHUNK_SIZE):
                     n_events = len(chunk['evtFillWgt'])
+                    total_loaded += n_events
                     base_mask = np.ones(n_events, dtype=bool)
 
                     for flag in self.selection_manager.flags:
                         if flag in chunk:
                             base_mask &= (chunk[flag] == 1)
+                    total_base += int(np.sum(base_mask))
 
                     # Process event flags ('|' = OR, '+' = AND)
                     for fs_flag in event_flags:
@@ -400,11 +418,28 @@ class DataLoader:
                             print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
                             continue
 
-                        if np.sum(combined_mask) == 0:
+                        n_pass = int(np.sum(combined_mask))
+                        custom_pass[i] += n_pass
+                        if n_pass == 0:
                             continue
                         extracted_vars = self._extract_values(chunk, combined_mask, is_data)
                         if extracted_vars:
+                            first_key = next(iter(extracted_vars))
+                            custom_stored_events[i] += len(extracted_vars[first_key])
                             custom_chunks[custom_region_name].append(extracted_vars)
+
+                # Per-file summary
+                print(f"  loaded {total_loaded:,} evts after uproot cut  |  "
+                      f"{total_base:,} pass base mask  |  RSS {self._rss_mb():.0f} MB")
+                for i, cut in enumerate(custom_cuts):
+                    # Estimate accumulated array memory
+                    acc_mb = 0
+                    region = f"CustomRegion{i+1}"
+                    for chunk_vars in custom_chunks[region]:
+                        acc_mb += sum(a.nbytes for a in chunk_vars.values()) / 1e6
+                    print(f"  custom cut {i+1}: {custom_pass[i]:,} events pass cut  |  "
+                          f"{custom_stored_events[i]:,} stored entries  |  "
+                          f"accumulated {acc_mb:.1f} MB in custom_chunks")
 
                 # Merge chunks
                 for fs_flag in event_flags:

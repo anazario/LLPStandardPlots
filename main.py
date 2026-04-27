@@ -403,6 +403,16 @@ def main():
         blind_cuts_all += [False] * (len(args.flags) - len(blind_cuts_all))
     custom_blind_cuts = [blind_cuts_all[i] for i, f in enumerate(args.flags)
                          if not is_event_flag(f)]
+
+    # Map original custom-cut index → data CustomRegion name; None = blinded (never loaded)
+    _di = 0
+    custom_cut_data_region_map = {}
+    for _i, _blind in enumerate(custom_blind_cuts):
+        if _blind:
+            custom_cut_data_region_map[_i] = None
+        else:
+            custom_cut_data_region_map[_i] = f"CustomRegion{_di + 1}"
+            _di += 1
     
     print(f"Loading data for {len(event_flags)} event flags and {len(custom_cuts)} custom cuts...")
     
@@ -418,7 +428,7 @@ def main():
     data_flag_key = None   # key used to retrieve cr_data_collection later
     if all_data_files:
         data_event_flags = event_flags.copy()
-        data_custom_cuts = custom_cuts.copy()
+        data_custom_cuts = [c for c, b in zip(custom_cuts, custom_blind_cuts) if not b]
         if args.data_flag:
             if data_flag_is_event:
                 if args.data_flag not in data_event_flags:
@@ -524,16 +534,12 @@ def main():
         if item['data_source'] == 'event_flag':
             current_data_data = data_data_map.get(flag, {})
         else:
-            # For custom cuts, find the matching region (only if data files were provided)
-            if custom_data_data_map:
-                custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
-                if custom_region_idx >= 0 and custom_region_idx < len(custom_data_data_map):
-                    custom_region_name = list(custom_data_data_map.keys())[custom_region_idx]
-                    current_data_data = custom_data_data_map.get(custom_region_name, {})
-                else:
-                    current_data_data = {}
+            # For custom cuts, use the blind-aware region map to look up data
+            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
+            data_region_name = custom_cut_data_region_map.get(custom_region_idx)  # None = blinded
+            if data_region_name and custom_data_data_map:
+                current_data_data = custom_data_data_map.get(data_region_name, {})
             else:
-                # No data files provided
                 current_data_data = {}
         
         # Retrieve CR data collection for --data-flag (shared by 2D and cr_sig blocks)

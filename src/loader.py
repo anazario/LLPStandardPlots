@@ -237,16 +237,34 @@ class DataLoader:
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
         
-        results = [self._load_one_file(fp, branches, event_flags, custom_cuts, is_data)
-                   for fp in file_paths]
+        import gc, ctypes
 
-        for file_path, file_event, file_custom in results:
+        def _trim_heap():
+            gc.collect()
+            try:
+                ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
+
+        for fp in file_paths:
+            file_path, file_event, file_custom = self._load_one_file(
+                fp, branches, event_flags, custom_cuts, is_data)
             for flag, fdata in file_event.items():
                 event_data[flag][file_path] = fdata
             for region, fdata in file_custom.items():
                 custom_data[region][file_path] = fdata
+            _trim_heap()
 
         return event_data, custom_data
+
+    # Branches we know are scalar (one value per event) and safe to push into
+    # uproot's C-level cut expression.  Jagged branches cannot be used there.
+    _KNOWN_SCALAR_BRANCHES = {
+        'SV_nHadronic', 'SV_nLeptonic', 'nSelPhotons', 'selCMet', 'evtFillWgt',
+        'rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr', 'rjrIsr_RIsr', 'rjrIsr_Rs',
+        'rjrIsrPTS', 'rjrIsrSdphiBV', 'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects',
+        'rjr_Ms', 'rjr_Rs', 'rjrPTS',
+    }
 
     def _build_scalar_prefilter(self, custom_cuts, available_branches, tree):
         """
@@ -261,19 +279,8 @@ class DataLoader:
         """
         import re
 
-        # Only scalar (non-jagged) branches that are present in the tree can be
-        # pushed down.  We identify them by checking the branch interpretation.
-        scalar_branches = set()
-        for b in available_branches:
-            try:
-                interp = tree[b].interpretation
-                # uproot marks jagged/variable-length branches with a dtype that has
-                # ndim > 0 or via AsJagged; scalars have a flat dtype interpretation.
-                if hasattr(interp, 'dtype') and interp.dtype.ndim == 0:
-                    scalar_branches.add(b)
-            except Exception:
-                pass
-
+        # Only use scalar branches that are actually present in this tree.
+        scalar_branches = self._KNOWN_SCALAR_BRANCHES & set(available_branches)
         if not scalar_branches:
             return None
 

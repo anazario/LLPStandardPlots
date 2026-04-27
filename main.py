@@ -396,6 +396,13 @@ def main():
     # Separate event flags from custom cut strings
     event_flags = [flag for flag in args.flags if is_event_flag(flag)]
     custom_cuts = [flag for flag in args.flags if not is_event_flag(flag)]
+
+    # Build per-custom-cut blind list from YAML (default all False)
+    blind_cuts_all = getattr(args, 'blind_cuts', None) or [False] * len(args.flags)
+    if len(blind_cuts_all) < len(args.flags):
+        blind_cuts_all += [False] * (len(args.flags) - len(blind_cuts_all))
+    custom_blind_cuts = [blind_cuts_all[i] for i, f in enumerate(args.flags)
+                         if not is_event_flag(f)]
     
     print(f"Loading data for {len(event_flags)} event flags and {len(custom_cuts)} custom cuts...")
     
@@ -467,7 +474,8 @@ def main():
             'bg_data': custom_bg_data_map.get(custom_region, {}),
             'show_region_label': False,
             'original_cut': original_cut,
-            'custom_label': custom_label
+            'custom_label': custom_label,
+            'blind_data': custom_blind_cuts[i] if i < len(custom_blind_cuts) else False,
         })
     
     # Process all flags and cuts uniformly
@@ -549,7 +557,7 @@ def main():
             if args.unblind:
                 blind_data = False  # Override blinding if --unblind flag is set
             else:
-                blind_data = is_signal_region(flag) or item['data_source'] == 'custom_cut'
+                blind_data = is_signal_region(flag) or item.get('blind_data', False)
             
             # Determine variable set based on final state (like datamc_batch_process.py)
             datamc_vars = []
@@ -655,7 +663,7 @@ def main():
             if args.unblind:
                 blind_data = False
             else:
-                blind_data = is_signal_region(flag) or item['data_source'] == 'custom_cut'
+                blind_data = is_signal_region(flag) or item.get('blind_data', False)
 
             # Create directories once before the loop
             if use_root_file:
@@ -762,7 +770,7 @@ def main():
                 # 1. Current flag (CR only): data loaded under the same flag as signal/bg
                 # 2. --data-flag CR collection (if provided and different from current flag)
                 data_2d_cases = []
-                if current_data_data and not is_signal_region(flag):
+                if current_data_data and not (is_signal_region(flag) or item.get('blind_data', False)):
                     data_2d_cases.append((
                         current_data_data, fs_label_latex,
                         f"data_2d_{flag}_{suffix}"

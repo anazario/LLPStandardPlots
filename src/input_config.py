@@ -148,8 +148,22 @@ def load_input_config(yaml_path):
     bg_groups = _parse_groups(cfg.get('background', []), base_dir)
     data_groups = _parse_groups(cfg.get('data', []), base_dir)
 
-    override_keys = ('lumi', 'energy', 'flags', 'plots', 'format', 'output', 'tree', 'analysis_type')
+    override_keys = ('lumi', 'energy', 'plots', 'format', 'output', 'tree', 'analysis_type')
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
+
+    # Parse flags — each entry may be a plain string or {cut: "...", blind: true}
+    raw_flags = cfg.get('flags', None)
+    if raw_flags is not None:
+        flag_strings, blind_cuts = [], []
+        for entry in raw_flags:
+            if isinstance(entry, str):
+                flag_strings.append(entry)
+                blind_cuts.append(False)
+            elif isinstance(entry, dict):
+                flag_strings.append(entry['cut'])
+                blind_cuts.append(bool(entry.get('blind', False)))
+        overrides['flags'] = flag_strings
+        overrides['blind_cuts'] = blind_cuts
 
     return {
         'signal_files': signal_files,

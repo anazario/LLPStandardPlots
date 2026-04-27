@@ -349,10 +349,19 @@ class DataLoader:
                 flag_counts  = {flag: 0 for flag in event_flags}
                 pass_counts  = {flag: 0 for flag in event_flags}
 
+                import gc, ctypes
+                def _trim():
+                    gc.collect()
+                    try:
+                        ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                    except Exception:
+                        pass
+
                 total_loaded = 0
                 total_base   = 0
                 custom_pass  = [0] * len(custom_cuts)
                 custom_stored_events = [0] * len(custom_cuts)
+                chunk_count  = 0
 
                 for chunk in tree.iterate(available_branches, cut=cut_expr,
                                           library='np', step_size=CHUNK_SIZE):
@@ -434,6 +443,9 @@ class DataLoader:
                             first_key = next(iter(extracted_vars))
                             custom_stored_events[i] += len(extracted_vars[first_key])
                             custom_chunks[custom_region_name].append(extracted_vars)
+
+                    chunk_count += 1
+                    _trim()
 
                 # Per-file summary
                 print(f"  loaded {total_loaded:,} evts after uproot cut  |  "

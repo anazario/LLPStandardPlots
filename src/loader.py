@@ -17,11 +17,12 @@ def _merge_chunks(chunks):
 
 class DataLoader:
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
-                 analysis_mode='uncompressed', isr_pt_cut=None):
+                 analysis_mode='uncompressed', isr_pt_cut=None, n_workers=1):
         self.tree_name = tree_name
         self.luminosity = luminosity
         self.analysis_mode = analysis_mode
         self.isr_pt_cut = isr_pt_cut
+        self.n_workers = max(1, int(n_workers))
         self.selection_manager = SelectionManager()
         self.loading_summary = {
             'data_types_loaded': set(),
@@ -223,37 +224,50 @@ class DataLoader:
         Args:
             is_data: If True, treat as data files (no MC scaling)
         Returns: (event_flag_data, custom_cut_data)
+        Uses self.n_workers > 1 for file-level parallelism via ProcessPoolExecutor.
         """
         self._track_loading(event_flags=event_flags, custom_cuts=custom_cuts, is_data=is_data, file_count=len(file_paths))
-        # branches to load - use mode-aware branch selection
         branches = self._get_branches_for_mode()
-        # Add flag branches, expanding '+'(AND) and '|'(OR) operators into components
         for flag in event_flags:
             for or_part in flag.split('|'):
                 branches.extend(f.strip() for f in or_part.split('+'))
         branches.extend(self.selection_manager.flags)
-        
-        # Initialize data structures
+
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
-        
-        import gc, ctypes
 
-        def _trim_heap():
-            gc.collect()
-            try:
-                ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
-            except Exception:
-                pass
-
-        for fp in file_paths:
-            file_path, file_event, file_custom = self._load_one_file(
-                fp, branches, event_flags, custom_cuts, is_data)
+        def _merge_result(file_path, file_event, file_custom):
             for flag, fdata in file_event.items():
                 event_data[flag][file_path] = fdata
             for region, fdata in file_custom.items():
                 custom_data[region][file_path] = fdata
-            _trim_heap()
+
+        if self.n_workers > 1 and len(file_paths) > 1:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            print(f"  Parallel loading: {len(file_paths)} files across {self.n_workers} workers")
+            with ProcessPoolExecutor(max_workers=self.n_workers) as pool:
+                futures = {
+                    pool.submit(self._load_one_file, fp, branches, event_flags, custom_cuts, is_data): fp
+                    for fp in file_paths
+                }
+                for fut in as_completed(futures):
+                    fp_done, file_event, file_custom = fut.result()
+                    _merge_result(fp_done, file_event, file_custom)
+        else:
+            import gc, ctypes
+
+            def _trim_heap():
+                gc.collect()
+                try:
+                    ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
+
+            for fp in file_paths:
+                file_path, file_event, file_custom = self._load_one_file(
+                    fp, branches, event_flags, custom_cuts, is_data)
+                _merge_result(file_path, file_event, file_custom)
+                _trim_heap()
 
         return event_data, custom_data
 

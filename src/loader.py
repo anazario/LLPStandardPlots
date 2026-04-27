@@ -445,8 +445,8 @@ class DataLoader:
                             continue
                         extracted_vars = self._extract_values(chunk, combined_mask, is_data)
                         if extracted_vars:
-                            first_key = next(iter(extracted_vars))
-                            custom_stored_events[i] += len(extracted_vars[first_key])
+                            n_stored = max((len(v) for v in extracted_vars.values()), default=0)
+                            custom_stored_events[i] += n_stored
                             custom_chunks[custom_region_name].append(extracted_vars)
 
                     chunk_count += 1

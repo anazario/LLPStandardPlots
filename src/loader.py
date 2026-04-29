@@ -55,8 +55,11 @@ class DataLoader:
             'HadronicSV_nTracks',
             'LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
             'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta',
-            # Photon timing variables (Gen branches absent in data files; handled gracefully)
+            # Photon variables (Gen branches absent in data files; handled gracefully)
+            'nBaseLinePhotons',
             'baseLinePhoton_WTimeSig',
+            'baseLinePhoton_beamHaloCNNScore',
+            'baseLinePhoton_isoANNScore',
             'baseLinePhoton_GenTimeSig',
             'baseLinePhoton_GenLabTimeSig'
         ]
@@ -441,6 +444,15 @@ class DataLoader:
                                     cut_variables[sv_var] = np.array(
                                         [float(a[0]) if len(a) > 0 else np.nan
                                          for a in chunk[sv_var]], dtype=float)
+                            # Add photon variables (jagged) as first-element scalars per event
+                            for pho_var in ['baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
+                                            'baseLinePhoton_isoANNScore', 'baseLinePhoton_GenTimeSig']:
+                                if pho_var in chunk:
+                                    cut_variables[pho_var] = np.array(
+                                        [float(a[0]) if len(a) > 0 else np.nan
+                                         for a in chunk[pho_var]], dtype=float)
+                            if 'nBaseLinePhotons' in chunk:
+                                cut_variables['nBaseLinePhotons'] = chunk['nBaseLinePhotons']
                             if self.analysis_mode == AnalysisMode.COMPRESSED:
                                 for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
                                                'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',

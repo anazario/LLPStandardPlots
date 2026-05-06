@@ -154,8 +154,13 @@ def load_input_config(yaml_path):
     bg_groups = _parse_groups(cfg.get('background', []), base_dir)
     data_groups = _parse_groups(cfg.get('data', []), base_dir)
 
-    override_keys = ('lumi', 'energy', 'plots', 'format', 'output', 'tree', 'analysis_type', 'isr_pt_cut')
+    override_keys = ('lumi', 'energy', 'plots', 'output', 'tree', 'analysis_type', 'isr_pt_cut')
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
+
+    # format: accept "pdf" or ["pdf", "root"] — always store as list
+    if 'format' in cfg:
+        raw_fmt = cfg['format']
+        overrides['format'] = [raw_fmt] if isinstance(raw_fmt, str) else list(raw_fmt)
 
     # Parse flags — each entry may be a plain string or {cut: "...", blind: true, region_type: "sv"|"pho"}
     raw_flags = cfg.get('flags', None)

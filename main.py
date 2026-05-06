@@ -163,6 +163,23 @@ def _write_hists_from_pad(pad):
             prim.Write()
 
 
+def _write_palette_setup(f_out):
+    """
+    Write a TMacro named 'setup' to the ROOT file that restores the kViridis
+    color palette when sourced.  Without this, TPaletteAxis objects in saved
+    2D canvases crash on open in a fresh ROOT session because the palette
+    TColor indices no longer exist.
+
+    Usage after opening the file:
+        root [0] f->Get("setup")->Exec()   // restores palette
+        root [1] f->Get("my_canvas")->Draw()
+    """
+    macro = ROOT.TMacro("setup")
+    macro.AddLine("gStyle->SetPalette(kViridis);")
+    f_out.cd()
+    macro.Write()
+
+
 def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path="", canvas_name=None, save_hists=False):
     """
     Save canvas in the specified format.
@@ -363,26 +380,30 @@ def main():
             return
 
     # Handle output format and smart file naming
-    output_format = args.format
+    # Normalize to list (CLI gives a string; YAML may give a list)
+    if isinstance(args.format, str):
+        args.format = [args.format]
+    output_formats = args.format
     output_path = args.output
 
-    if output_format == 'root':
-        # For ROOT format: handle smart .root extension
-        if not output_path.endswith('.root'):
-            output_path = f"{output_path}.root"
-        # Will create a ROOT file
-        use_root_file = True
-        output_dir = None
+    use_root_file = 'root' in output_formats
+    non_root_formats = [f for f in output_formats if f != 'root']
+
+    # Root output path
+    if use_root_file:
+        root_output_path = output_path if output_path.endswith('.root') else f"{output_path}.root"
     else:
-        # For PDF/PNG formats: use output_path as directory name
-        # Remove .root extension if accidentally provided
-        if output_path.endswith('.root'):
-            output_dir = output_path[:-5]  # Remove the last 5 characters (.root)
-        else:
-            output_dir = output_path
-        use_root_file = False
-        # Create output directory if it doesn't exist
+        root_output_path = None
+
+    # Directory for non-root formats (pdf, png, eps)
+    if non_root_formats:
+        output_dir = output_path[:-5] if output_path.endswith('.root') else output_path
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = None
+
+    # Keep a single string alias used in a few legacy print statements
+    output_format = output_formats[0]
 
     # Setup
     style = StyleManager(luminosity=args.lumi, energy=args.energy)
@@ -456,15 +477,22 @@ def main():
     # Print comprehensive data loading summary
     loader.print_comprehensive_summary()
     
-    # Output File (only for ROOT format)
+    # Output File (only when root format requested)
     if use_root_file:
-        f_out = ROOT.TFile(output_path, "RECREATE")
+        f_out = ROOT.TFile(root_output_path, "RECREATE")
+        _write_palette_setup(f_out)
     else:
         f_out = None
-    
-    # Shadow the module-level save_canvas to bake in save_hists, keeping all call sites unchanged
-    def save_canvas(canvas, fmt, fout, outdir, subdir="", cname=None):  # noqa: F811
-        _save_canvas_impl(canvas, fmt, fout, outdir, subdir, cname, save_hists=args.save_hists)
+
+    # Shadow the module-level save_canvas to fan out across all requested formats.
+    # Call sites are unchanged — they still pass (canvas, fmt, fout, outdir, ...) but
+    # this wrapper ignores those args and uses the closure-captured format list instead.
+    def save_canvas(canvas, _fmt, _fout, _outdir, subdir="", cname=None):  # noqa: F811
+        for fmt in output_formats:
+            _save_canvas_impl(canvas, fmt,
+                              f_out if fmt == 'root' else None,
+                              output_dir,
+                              subdir, cname, save_hists=args.save_hists)
 
     # Combine both event flags and custom cuts into one processing loop
     all_flags_and_cuts = []
@@ -904,9 +932,10 @@ def main():
 
     if use_root_file:
         f_out.Close()
-        print(f"\nDone! Plots saved to {output_path}")
-    else:
-        print(f"\nDone! Plots saved to {output_dir}/ directory in {output_format} format")
+        print(f"\nDone! Plots saved to {root_output_path}")
+    if output_dir:
+        fmts = ", ".join(non_root_formats)
+        print(f"Done! Plots saved to {output_dir}/ ({fmts})")
 
 if __name__ == "__main__":
     main()

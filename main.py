@@ -579,8 +579,11 @@ def main():
             # Determine variable set based on final state (like datamc_batch_process.py)
             datamc_vars = []
             
-            # Always include event-level variables
-            event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet', 'rjrIsr_RIsr', 'rjrIsr_PtIsr']
+            # Event-level variables differ by analysis mode
+            if analysis_mode == AnalysisMode.COMPRESSED:
+                event_level_vars = ['rjrIsr_RIsr', 'rjrIsr_PtIsr']
+            else:
+                event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet']
             datamc_vars.extend(event_level_vars)
             
             if "NHad" in flag and "NLep" not in flag:

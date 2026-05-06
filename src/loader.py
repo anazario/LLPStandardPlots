@@ -89,8 +89,10 @@ class DataLoader:
         # Add mode-specific cuts
         if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
             baseline_cuts.append("rjrPTS < 150")
-        elif self.analysis_mode == AnalysisMode.COMPRESSED and self.isr_pt_cut is not None:
-            baseline_cuts.append(f"rjrIsr_PtIsr >= {self.isr_pt_cut:.0f}")
+        elif self.analysis_mode == AnalysisMode.COMPRESSED:
+            baseline_cuts.append("rjrIsr_nSVisObjects > 0")
+            if self.isr_pt_cut is not None:
+                baseline_cuts.append(f"rjrIsr_PtIsr >= {self.isr_pt_cut:.0f}")
 
         print(f"    • Baseline cuts: {', '.join(baseline_cuts)}")
 
@@ -371,10 +373,12 @@ class DataLoader:
                 if scalar_prefilter:
                     cut_expr = f"({cut_expr}) & ({scalar_prefilter})"
 
-                if (self.analysis_mode == AnalysisMode.COMPRESSED and
-                        self.isr_pt_cut is not None and
-                        'rjrIsr_PtIsr' in available_branches):
-                    cut_expr += f" & (rjrIsr_PtIsr >= {self.isr_pt_cut})"
+                if self.analysis_mode == AnalysisMode.COMPRESSED:
+                    if (self.isr_pt_cut is not None and
+                            'rjrIsr_PtIsr' in available_branches):
+                        cut_expr += f" & (rjrIsr_PtIsr >= {self.isr_pt_cut})"
+                    if 'rjrIsr_nSVisObjects' in available_branches:
+                        cut_expr += " & (rjrIsr_nSVisObjects > 0)"
 
                 if self.verbose:
                     print(f"  tree entries: {n_entries:,}  |  uproot cut: {cut_expr}")
@@ -552,13 +556,12 @@ class DataLoader:
                     data['rjrPTS'][idx][0] < AnalysisConfig.RJR_PTS_CUT):
                     passes_validation = True
             else:
-                # Compressed mode: require rjrIsr_PtIsr and optionally apply ISR pT cut
-                if 'rjrIsr_PtIsr' in data:
-                    if self.isr_pt_cut is not None:
-                        if data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut:
-                            passes_validation = True
-                    else:
-                        passes_validation = True
+                # Compressed mode: require rjrIsr_PtIsr, rjrIsr_nSVisObjects > 0, and ISR pT cut
+                if 'rjrIsr_PtIsr' in data and 'rjrIsr_nSVisObjects' in data:
+                    passes_pt = (self.isr_pt_cut is None or
+                                 data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut)
+                    passes_nsv = data['rjrIsr_nSVisObjects'][idx] > 0
+                    passes_validation = passes_pt and passes_nsv
 
             if not passes_validation:
                 continue

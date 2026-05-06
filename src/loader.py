@@ -609,15 +609,19 @@ class DataLoader:
                         extracted_data[f'{var_key}_weights'].append(base_weight)
 
                 elif var_key.startswith('HadronicSV_') or var_key.startswith('LeptonicSV_'):
-                    # Compressed mode only uses scalar ISR variables for plotting;
-                    # skipping SV flattening avoids GB-scale accumulation on large data files.
-                    if self.analysis_mode == AnalysisMode.COMPRESSED:
-                        continue
                     sv_array = data[var_key][idx]
-                    for sv_val in sv_array:
-                        scaled_val = sv_val * var_config['scale']
-                        extracted_data[var_key].append(scaled_val)
-                        extracted_data[f'{var_key}_weights'].append(base_weight)
+                    if self.analysis_mode == AnalysisMode.COMPRESSED:
+                        # Extract only the leading SV to avoid per-event array flattening
+                        # on large data files; consistent with custom-cut evaluation.
+                        if len(sv_array) > 0:
+                            scaled_val = float(sv_array[0]) * var_config['scale']
+                            extracted_data[var_key].append(scaled_val)
+                            extracted_data[f'{var_key}_weights'].append(base_weight)
+                    else:
+                        for sv_val in sv_array:
+                            scaled_val = sv_val * var_config['scale']
+                            extracted_data[var_key].append(scaled_val)
+                            extracted_data[f'{var_key}_weights'].append(base_weight)
 
                 elif var_key.startswith('baseLinePhoton_'):
                     if self.analysis_mode == AnalysisMode.COMPRESSED:

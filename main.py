@@ -474,23 +474,39 @@ def main():
     # Combine both event flags and custom cuts into one processing loop
     all_flags_and_cuts = []
     
-    # Add event flags
+    # region_types is parallel to args.flags; default to None for each flag
+    all_region_types = getattr(args, 'region_types', None) or [None] * len(args.flags)
+    if len(all_region_types) < len(args.flags):
+        all_region_types += [None] * (len(args.flags) - len(all_region_types))
+
+    # Add event flags — auto-derive region_type when not explicitly set
     for flag in event_flags:
+        flag_idx = args.flags.index(flag) if flag in args.flags else -1
+        region_type = all_region_types[flag_idx] if flag_idx >= 0 else None
+        if region_type is None:
+            if _is_sv_region(flag):
+                region_type = 'sv'
+            elif 'NPho' in flag:
+                region_type = 'pho'
         all_flags_and_cuts.append({
             'name': flag,
             'data_source': 'event_flag',
+            'region_type': region_type,
             'sig_data': sig_data_map.get(flag, {}),
             'bg_data': bg_data_map.get(flag, {}),
             'show_region_label': True
         })
-    
+
     # Add custom cuts
+    custom_region_types = [all_region_types[i] for i, f in enumerate(args.flags)
+                           if not is_event_flag(f)]
     for i, custom_region in enumerate(custom_sig_data_map.keys()):
         original_cut = custom_cuts[i] if i < len(custom_cuts) else "Unknown"
         custom_label = args.labels[i] if args.labels and i < len(args.labels) else None
         all_flags_and_cuts.append({
             'name': custom_region,
             'data_source': 'custom_cut',
+            'region_type': custom_region_types[i] if i < len(custom_region_types) else None,
             'sig_data': custom_sig_data_map.get(custom_region, {}),
             'bg_data': custom_bg_data_map.get(custom_region, {}),
             'show_region_label': False,
@@ -505,8 +521,10 @@ def main():
         current_sig_data = item['sig_data'] 
         current_bg_data = item['bg_data']
 
+        region_type = item.get('region_type')
+
         # Merge QCD and GJets into a single QCD entry for SV regions by default
-        if _is_sv_region(flag) and not args.no_merge_qcd_gjets:
+        if region_type == 'sv' and not args.no_merge_qcd_gjets:
             current_bg_data = _merge_qcd_gjets(current_bg_data, loader.combine_data)
 
         show_region_label = item['show_region_label']
@@ -586,32 +604,24 @@ def main():
                 event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet']
             datamc_vars.extend(event_level_vars)
             
-            if "NHad" in flag and "NLep" not in flag:
-                # Pure hadronic final state - use HadronicSV variables
-                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
-                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
-                              'HadronicSV_nTracks']
-                datamc_vars.extend(hadSV_vars)
-            elif "NLep" in flag and "NHad" not in flag:
-                # Pure leptonic final state - use LeptonicSV variables
-                lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
-                              'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
-                datamc_vars.extend(lepSV_vars)
-            elif "NHad" in flag and "NLep" in flag:
-                # Combined final state - use BOTH HadronicSV and LeptonicSV variables
+            if region_type == 'sv':
                 hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
                               'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
                               'HadronicSV_nTracks']
                 lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
                               'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
-                datamc_vars.extend(hadSV_vars)
-                datamc_vars.extend(lepSV_vars)
-            # else: for other flags (custom cuts, etc.) use only event-level variables
-
-            # Photon variables: added whenever NPho appears in the flag.
-            # mc_only variables (Gen-level) are excluded here since data/MC
-            # comparison requires the variable to exist in data files too.
-            if "NPho" in flag:
+                # For event flags, only include the relevant SV flavor(s)
+                if item['data_source'] == 'event_flag':
+                    if "NHad" in flag and "NLep" not in flag:
+                        datamc_vars.extend(hadSV_vars)
+                    elif "NLep" in flag and "NHad" not in flag:
+                        datamc_vars.extend(lepSV_vars)
+                    else:
+                        datamc_vars.extend(hadSV_vars + lepSV_vars)
+                else:
+                    datamc_vars.extend(hadSV_vars + lepSV_vars)
+            elif region_type == 'pho':
+                # mc_only variables (Gen-level) excluded — not present in data files
                 photon_vars = [
                     v for v, c in AnalysisConfig.VARIABLES.items()
                     if v.startswith('baseLinePhoton_') and not c.get('mc_only', False)

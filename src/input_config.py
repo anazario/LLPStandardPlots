@@ -157,19 +157,22 @@ def load_input_config(yaml_path):
     override_keys = ('lumi', 'energy', 'plots', 'format', 'output', 'tree', 'analysis_type', 'isr_pt_cut')
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
 
-    # Parse flags — each entry may be a plain string or {cut: "...", blind: true}
+    # Parse flags — each entry may be a plain string or {cut: "...", blind: true, region_type: "sv"|"pho"}
     raw_flags = cfg.get('flags', None)
     if raw_flags is not None:
-        flag_strings, blind_cuts = [], []
+        flag_strings, blind_cuts, region_types = [], [], []
         for entry in raw_flags:
             if isinstance(entry, str):
                 flag_strings.append(entry)
                 blind_cuts.append(False)
+                region_types.append(None)
             elif isinstance(entry, dict):
                 flag_strings.append(entry['cut'])
                 blind_cuts.append(bool(entry.get('blind', False)))
+                region_types.append(entry.get('region_type', None))
         overrides['flags'] = flag_strings
         overrides['blind_cuts'] = blind_cuts
+        overrides['region_types'] = region_types
 
     return {
         'signal_files': signal_files,

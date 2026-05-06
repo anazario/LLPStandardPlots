@@ -298,11 +298,13 @@ def main():
     # Load YAML input config if provided
     bg_groups = None
     data_groups = None
+    signal_groups = None
     if args.input_config:
         config = load_input_config(args.input_config)
         apply_config_to_args(args, config['overrides'])
         if not args.signal:
             args.signal = config['signal_files']
+            signal_groups = config['signal_groups']
         if not args.background:
             bg_groups = config['bg_groups']
         if not args.data:
@@ -344,6 +346,8 @@ def main():
     # Expand input paths to handle directories
     try:
         signal_files = expand_input_paths(args.signal)
+        if signal_groups is None:
+            signal_groups = [{'name': None, 'files': signal_files, 'combine': False, 'scale': 1.0}]
         if bg_groups is None:
             bg_groups = [{'name': None, 'files': expand_input_paths(args.background) if args.background else [], 'combine': False}]
         if data_groups is None:
@@ -420,7 +424,9 @@ def main():
     print(f"Loading data for {len(event_flags)} event flags and {len(custom_cuts)} custom cuts...")
     
     # Load each category once (background files deduplicated across groups)
-    sig_data_map, custom_sig_data_map = loader.load_data_unified(signal_files, event_flags, custom_cuts)
+    sig_flat_map, custom_sig_flat_map = loader.load_data_unified(signal_files, event_flags, custom_cuts)
+    sig_data_map = assemble_grouped_map(sig_flat_map, signal_groups, loader.combine_data)
+    custom_sig_data_map = assemble_grouped_map(custom_sig_flat_map, signal_groups, loader.combine_data)
     bg_flat_map, custom_bg_flat_map = loader.load_data_unified(all_bg_files, event_flags, custom_cuts)
 
     # Load data files if provided.
@@ -572,7 +578,7 @@ def main():
             datamc_vars = []
             
             # Always include event-level variables
-            event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet']
+            event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet', 'rjrIsr_RIsr', 'rjrIsr_PtIsr']
             datamc_vars.extend(event_level_vars)
             
             if "NHad" in flag and "NLep" not in flag:

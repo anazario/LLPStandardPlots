@@ -42,6 +42,9 @@ def parse_args():
                    help="Centre-of-mass energy in TeV (default: 13)")
     p.add_argument("--mode", choices=["compressed", "uncompressed"], default=None,
                    help="Override auto-detected fit mode")
+    p.add_argument("--label-scheme", choices=["auto", "legacy", "compressed-final", "noncompressed-final"],
+                   default="auto",
+                   help="Axis/category label scheme (default: auto, current behavior)")
     p.add_argument("--sr-color", action="store_true", default=False,
                    help="Highlight predicted SR bin in orange on ABCD plots")
     return p.parse_args()
@@ -62,6 +65,7 @@ def main():
         output_prefix=args.output,
         output_format=args.format,
         mode_override=args.mode,
+        label_scheme=args.label_scheme,
         show_sr=args.sr_color,
     )
 

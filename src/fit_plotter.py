@@ -2,15 +2,28 @@ import numpy as np
 import uproot
 import yaml
 import ROOT
+import re
 from collections import namedtuple
 from src.style import StyleManager
 
 # ── Bin label tables ──────────────────────────────────────────────────────────
 
 RISR_LABELS = {
-    "00": "[0.7, 0.8)",
-    "10": "[0.8, 0.9)",
-    "20": "#geq 0.9",
+    "00": "[0.4, 0.6)",
+    "10": "[0.6, 0.75)",
+    "20": "[0.75, 0.9)",
+    "30": "#geq 0.9",
+}
+
+RISR_COMPACT_LABELS = {
+    "00": "R_{ISR}^{lo}",
+    "10": "R_{ISR}^{med}",
+    "20": "R_{ISR}^{hi-}",  # [0.75, 0.9) — only valid for 4-bin channels
+    "30": "R_{ISR}^{hi+}",
+}
+
+ABCD_COMPRESSED_BIN_LABELS = {
+    "00": "#geq 0.75",
 }
 
 MSRS_MS_LABELS = {
@@ -32,6 +45,45 @@ COMBINED_MS_DELAYED_LABELS = {
     "10": "M_{S}^{SR}",
 }
 
+COMPRESSED_FINAL_TOP_LABELS = {
+    "SVonly":    "SV only",
+    "DelPho":    "#gamma_{d}",
+    "Eq2Pho":    "2#gamma",
+    "MixDel":    "#gamma_{d}+SV",
+    "MixPrompt": "#gamma_{p}+SV",
+}
+
+COMPRESSED_FINAL_RISR_LABELS = {
+    "SVonly":    {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
+    "DelPho":    {"10": "med", "00": "hi",  "20": "hi", "30": "hi+"},
+    "Eq2Pho":    {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
+    "MixDel":    {"10": "med", "00": "hi",  "20": "hi", "30": "hi+"},
+    "MixPrompt": {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
+}
+
+COMPRESSED_FINAL_GLOSSARY = [
+    ("R_{ISR}^{lo}",  "[0.4, 0.6)"),
+    ("R_{ISR}^{med}", "[0.6, 0.75)"),
+    ("R_{ISR}^{hi}",  "#geq 0.75"),
+    ("R_{ISR}^{hi+}", "#geq 0.9"),
+]
+
+NONCOMPRESSED_FINAL_TOP_LABELS = {
+    "lep_sv":          "Lep SV",
+    "had_sv":          "Had SV",
+    "delayed_photon":  "#gamma_{d}",
+    "one_prompt":      "1#gamma_{p}",
+    "two_prompt":      "2#gamma_{p}",
+}
+
+NONCOMPRESSED_FINAL_GLOSSARY = [
+    ("#gamma_{d}", ("M #geq 2.0 TeV; R #geq 0.3",)),
+    ("Lep SV", ("M: [2.0,2.6), #geq 2.6", "R: [0.15,0.3), #geq 0.3")),
+    ("Had SV", ("M: [2.0,2.6), [2.6,3.0), #geq 3.0", "R: [0.15,0.35), #geq 0.35")),
+    ("1#gamma_{p}", ("M: [2.5,2.7), #geq 2.7", "R: <0.35, [0.35,0.45), #geq 0.45")),
+    ("2#gamma_{p}", ("M: [2.5,2.7), #geq 2.7", "R: <0.3, #geq 0.3")),
+]
+
 CHANNEL_LABELS = {
     # Compressed shape_transfer
     "Ch1CRHadLow":        "1 Had. SV, d_{xy}/#sigma_{d_{xy}} #in [100, 600)",
@@ -48,6 +100,22 @@ CHANNEL_LABELS = {
     "Ch2CRPhoBHLate":     "BH #gamma, late timing",
     "Ch3CRPhonotBHEarly": "Non-BH #gamma, early timing",
     "Ch4CRPhonotBHLate":  "Non-BH #gamma, late timing",
+    # Compressed FullRegions — shape_transfer
+    "SVonly_AnchorCR":    "SV CR",
+    "SVonly_SR":          "SV SR",
+    "Eq2Pho_MedIsoCR":   "2#gamma Med. Iso CR",
+    "Eq2Pho_TightIsoSR": "2#gamma Tight Iso SR",
+    "MixPrompt_CR":       "1#gamma+SV CR",
+    "MixPromptSV_SR":     "1#gamma+SV SR",
+    # Compressed FullRegions — ABCD
+    "DelPho_BHEarly":     "#gamma t_{-}^{BH}",
+    "DelPho_BHLate":      "#gamma t_{+}^{BH}",
+    "DelPho_NotBHEarly":  "#gamma t_{-}^{!BH}",
+    "DelPho_NotBHLate":   "#gamma t_{+}^{!BH}",
+    "MixDel_BHEarly":     "SV+#gamma t_{-}^{BH}",
+    "MixDel_BHLate":      "SV+#gamma t_{+}^{BH}",
+    "MixDel_NotBHEarly":  "SV+#gamma t_{-}^{!BH}",
+    "MixDel_NotBHLate":   "SV+#gamma t_{+}^{!BH}",
 }
 
 # Compact labels used only in the combined plot where space is tight.
@@ -63,6 +131,22 @@ COMBINED_CHANNEL_LABELS = {
     "Ch6CRPho2Iso":       "#gamma^{ iso,2}",
     "Ch7CRHadLow":        "SV_{qq}^{CR,-}",
     "Ch8CRHadHigh":       "SV_{qq}^{CR,+}",
+    # Compressed FullRegions — shape_transfer
+    "SVonly_AnchorCR":    "SV CR",
+    "SVonly_SR":          "SV SR",
+    "Eq2Pho_MedIsoCR":   "2#gamma CR",
+    "Eq2Pho_TightIsoSR": "2#gamma SR",
+    "MixPrompt_CR":       "#gamma+SV CR",
+    "MixPromptSV_SR":     "#gamma+SV SR",
+    # Compressed FullRegions — ABCD
+    "DelPho_BHEarly":     "#gamma, t_{-}^{BH}",
+    "DelPho_BHLate":      "#gamma, t_{+}^{BH}",
+    "DelPho_NotBHEarly":  "#gamma, t_{-}^{!BH}",
+    "DelPho_NotBHLate":   "#gamma, t_{+}^{!BH}",
+    "MixDel_BHEarly":     "SV+#gamma, t_{-}^{BH}",
+    "MixDel_BHLate":      "SV+#gamma, t_{+}^{BH}",
+    "MixDel_NotBHEarly":  "SV+#gamma, t_{-}^{!BH}",
+    "MixDel_NotBHLate":   "SV+#gamma, t_{+}^{!BH}",
 }
 
 # ── Parsed fit configuration ──────────────────────────────────────────────────
@@ -82,6 +166,62 @@ _canvas_counter = [0]  # mutable counter for unique ROOT names
 def _uid():
     _canvas_counter[0] += 1
     return _canvas_counter[0]
+
+
+def _compressed_display_key(bin_name: str) -> str:
+    if bin_name.startswith("Val_"):
+        return bin_name[len("Val_"):]
+    return bin_name
+
+
+def _noncompressed_suffix(bin_name: str) -> str:
+    match = re.search(r"(?:Bin)?(\d{2})$", bin_name)
+    return match.group(1) if match else bin_name[-2:]
+
+
+def _noncompressed_mr_label(suffix: str, channel: str = "") -> str:
+    if channel == "delayed_photon":
+        return "#splitline{M}{R}"
+    if len(suffix) != 2 or not suffix.isdigit():
+        return suffix
+    ms_labels = {"0": "M^{-}", "1": "M^{+}", "2": "M^{++}" if channel == "had_sv" else "M^{2}"}
+    if channel == "one_prompt":
+        rs_labels = {"0": "R^{-}", "1": "R^{0}", "2": "R^{+}"}
+    else:
+        rs_labels = {"0": "R^{-}", "1": "R^{+}", "2": "R^{2}"}
+    ms = ms_labels.get(suffix[0], "M^{" + suffix[0] + "}")
+    rs = rs_labels.get(suffix[1], "R^{" + suffix[1] + "}")
+    return f"#splitline{{{ms}}}{{{rs}}}"
+
+
+def _make_channel_label(ch):
+    """Derive a short display label from a channel name using pattern matching."""
+    prefixes = [
+        ("MixPrompt", "#gamma+SV"),
+        ("MixDel",    "SV+#gamma"),
+        ("SVonly",    "SV"),
+        ("Eq2Pho",    "2#gamma"),
+        ("DelPho",    "#gamma"),
+    ]
+    symbol = ch
+    for pfx, sym in prefixes:
+        if ch.startswith(pfx):
+            symbol = sym
+            break
+
+    if   "NotBHEarly" in ch: sfx = "t_{-}^{!BH}"
+    elif "NotBHLate"  in ch: sfx = "t_{+}^{!BH}"
+    elif "BHEarly"    in ch: sfx = "t_{-}^{BH}"
+    elif "BHLate"     in ch: sfx = "t_{+}^{BH}"
+    elif "AnchorCR"   in ch: sfx = "Anchor CR"
+    elif "CRLow"      in ch: sfx = "CR"
+    elif "TightIso"   in ch: sfx = "Tight Iso SR"
+    elif "MedIso"     in ch: sfx = "Med. Iso CR"
+    elif ch.endswith(("_SR", "SR")): sfx = "SR"
+    elif ch.endswith(("_CR", "CR")): sfx = "CR"
+    else:                    sfx = ""
+
+    return f"{symbol} {sfx}".strip() if sfx else symbol
 
 
 # ── Main class ────────────────────────────────────────────────────────────────
@@ -112,7 +252,8 @@ class FitPlotter:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def plot_all(self, fit_result_path, fit_config_path, output_prefix="fit",
-                 output_format="pdf", mode_override=None, show_sr=False):
+                 output_format="pdf", mode_override=None, label_scheme="auto",
+                 show_sr=False):
         cfg = self._load_config(fit_config_path, mode_override)
         f   = uproot.open(fit_result_path)
 
@@ -120,6 +261,12 @@ class FitPlotter:
               f"{len(cfg.shape_bin_order)} shape channels"
               + (f" | {len(cfg.abcd_bin_order)} ABCD channels" if cfg.abcd_bin_order else ""))
 
+        if label_scheme == "auto" and cfg.mode == "uncompressed" and self._has_noncompressed_final_bins(cfg):
+            label_scheme = "noncompressed-final"
+        print(f"[FitPlotter] label_scheme={label_scheme}")
+
+        use_cf_labels = (label_scheme == "compressed-final")
+        use_ncf_labels = (label_scheme == "noncompressed-final")
         bin_scheme     = "msrs" if cfg.mode == "uncompressed" else "risr"
         shape_all_bins = [b for _, bins in cfg.shape_bin_order for b in bins]
 
@@ -136,7 +283,12 @@ class FitPlotter:
         plots = []
 
         # ── comprehensive shape_transfer ──────────────────────────────────────
-        shape_deco = self._build_decorations(cfg.shape_bin_order, bin_scheme)
+        if use_cf_labels:
+            shape_deco = self._build_compressed_final_decorations(cfg.shape_bin_order)
+        elif use_ncf_labels:
+            shape_deco = self._build_noncompressed_final_decorations(cfg.shape_bin_order)
+        else:
+            shape_deco = self._build_decorations(cfg.shape_bin_order, bin_scheme)
         plots.append((
             self._draw_standard_canvas(*pre_shape,  shape_deco, f"shp_pre_{_uid()}",  "Prefit"),
             self._draw_standard_canvas(*post_shape, shape_deco, f"shp_pst_{_uid()}", "Postfit"),
@@ -159,7 +311,12 @@ class FitPlotter:
 
                 tag       = f"{self._ch_short(anchor_ch)}_{self._ch_short(buoy_ch)}"
                 pair_ord  = [(anchor_ch, anchor_bins), (buoy_ch, buoy_bins)]
-                pair_deco = self._build_decorations(pair_ord, bin_scheme)
+                if use_cf_labels:
+                    pair_deco = self._build_compressed_final_decorations(pair_ord)
+                elif use_ncf_labels:
+                    pair_deco = self._build_noncompressed_final_decorations(pair_ord)
+                else:
+                    pair_deco = self._build_decorations(pair_ord, bin_scheme)
                 tog_pre   = tuple(np.concatenate([a, b]) for a, b in zip(a_pre,  b_pre))
                 tog_post  = tuple(np.concatenate([a, b]) for a, b in zip(a_post, b_post))
 
@@ -169,8 +326,15 @@ class FitPlotter:
                     f"pair_{tag}_together",
                 ))
 
-                a_deco = self._build_decorations([(anchor_ch, anchor_bins)], bin_scheme)
-                b_deco = self._build_decorations([(buoy_ch,   buoy_bins)],   bin_scheme)
+                if use_cf_labels:
+                    a_deco = self._build_compressed_final_decorations([(anchor_ch, anchor_bins)])
+                    b_deco = self._build_compressed_final_decorations([(buoy_ch, buoy_bins)])
+                elif use_ncf_labels:
+                    a_deco = self._build_noncompressed_final_decorations([(anchor_ch, anchor_bins)])
+                    b_deco = self._build_noncompressed_final_decorations([(buoy_ch, buoy_bins)])
+                else:
+                    a_deco = self._build_decorations([(anchor_ch, anchor_bins)], bin_scheme)
+                    b_deco = self._build_decorations([(buoy_ch,   buoy_bins)],   bin_scheme)
                 plots.append((
                     self._draw_sidebyside_canvas(*a_pre,  *b_pre,  a_deco, b_deco,
                                                  f"sbs_pre_{_uid()}",  "Prefit"),
@@ -181,7 +345,14 @@ class FitPlotter:
 
         # ── ABCD plots (uncompressed only) ────────────────────────────────────
         if cfg.abcd_bin_order:
-            abcd_flat_deco = self._build_decorations(cfg.abcd_bin_order, "ms_delayed")
+            # Single-bin ABCD cells (compressed) use compact R_ISR label; multi-bin uses Ms
+            abcd_scheme = "ms_delayed" if max(len(b) for _, b in cfg.abcd_bin_order) > 1 else "abcd"
+            if use_cf_labels:
+                abcd_flat_deco = self._build_compressed_final_decorations(cfg.abcd_bin_order)
+            elif use_ncf_labels:
+                abcd_flat_deco = self._build_noncompressed_final_decorations(cfg.abcd_bin_order)
+            else:
+                abcd_flat_deco = self._build_decorations(cfg.abcd_bin_order, abcd_scheme)
             plots.append((
                 self._draw_standard_canvas(*pre_abcd,  abcd_flat_deco, f"abf_pre_{_uid()}",  "Prefit"),
                 self._draw_standard_canvas(*post_abcd, abcd_flat_deco, f"abf_pst_{_uid()}", "Postfit"),
@@ -189,14 +360,23 @@ class FitPlotter:
             ))
 
             sr_ch = (next(iter(cfg.abcd_pairs)) if cfg.abcd_pairs else None) if show_sr else None
-            abcd_grid_deco = self._build_abcd_grid_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
+            if use_cf_labels:
+                abcd_grid_deco = self._build_compressed_final_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
+            elif use_ncf_labels:
+                abcd_grid_deco = self._build_noncompressed_final_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
+            else:
+                abcd_grid_deco = self._build_abcd_grid_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
             plots.append((
                 self._draw_standard_canvas(*pre_abcd,  abcd_grid_deco, f"abg_pre_{_uid()}",  "Prefit"),
                 self._draw_standard_canvas(*post_abcd, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit"),
                 "abcd_grid",
             ))
 
-            comb_deco  = self._build_combined_decorations(cfg.abcd_bin_order, cfg.shape_bin_order, sr_ch=sr_ch)
+            comb_deco  = self._build_combined_decorations(
+                cfg.abcd_bin_order, cfg.shape_bin_order, sr_ch=sr_ch,
+                shape_bin_scheme=bin_scheme, abcd_bin_scheme=abcd_scheme,
+                label_scheme=label_scheme,
+            )
             comb_pre   = tuple(np.concatenate([a, s]) for a, s in zip(pre_abcd,  pre_shape))
             comb_post  = tuple(np.concatenate([a, s]) for a, s in zip(post_abcd, post_shape))
             plots.append((
@@ -239,6 +419,25 @@ class FitPlotter:
             return "compressed"
         n = len(next(iter(assoc.values())))
         return "uncompressed" if n == 4 else "compressed"
+
+    def _has_noncompressed_final_bins(self, cfg):
+        bin_names = [
+            b
+            for bin_order in (cfg.shape_bin_order, cfg.abcd_bin_order)
+            for _, bins in bin_order
+            for b in bins
+        ]
+        final_tokens = (
+            "GeLep",
+            "GeHad",
+            "geq1PhoBHEarly",
+            "geq1PhoBHLate",
+            "geq1PhoNotBHEarly",
+            "geq1PhoNotBHLate",
+            "eq1Pho",
+            "eq2Pho",
+        )
+        return any(any(token in b for token in final_tokens) for b in bin_names)
 
     # ── Yield extraction ──────────────────────────────────────────────────────
 
@@ -298,12 +497,26 @@ class FitPlotter:
                     sub_group_labels[-1]["end"] = cursor
 
             elif bin_scheme == "risr":
+                _bll = bin_label_map if bin_label_map is not None else RISR_LABELS
+                has_bin30 = any(b[-2:] == "30" for b in bins)
                 for bin_name in bins:
-                    bin_labels.append(RISR_LABELS.get(bin_name[-2:], bin_name[-2:]))
+                    suf = bin_name[-2:]
+                    if suf == "20" and not has_bin30:
+                        # 3-bin channel: last RISR bin is >= 0.75, not [0.75, 0.9)
+                        label = "R_{ISR}^{hi}" if bin_label_map is not None else "#geq 0.75"
+                    else:
+                        label = _bll.get(suf, suf)
+                    bin_labels.append(label)
                     cursor += 1
 
             elif bin_scheme == "ms_delayed":
                 _bll = bin_label_map if bin_label_map is not None else MS_DELAYED_LABELS
+                for bin_name in bins:
+                    bin_labels.append(_bll.get(bin_name[-2:], bin_name[-2:]))
+                    cursor += 1
+
+            elif bin_scheme == "abcd":
+                _bll = bin_label_map if bin_label_map is not None else ABCD_COMPRESSED_BIN_LABELS
                 for bin_name in bins:
                     bin_labels.append(_bll.get(bin_name[-2:], bin_name[-2:]))
                     cursor += 1
@@ -315,7 +528,7 @@ class FitPlotter:
 
             _labels = label_map if label_map is not None else CHANNEL_LABELS
             group_labels.append({
-                "text":  _labels.get(ch, CHANNEL_LABELS.get(ch, ch)),
+                "text":  _labels.get(ch, CHANNEL_LABELS.get(ch, _make_channel_label(ch))),
                 "start": ch_start,
                 "end":   cursor,
             })
@@ -328,6 +541,7 @@ class FitPlotter:
         x_titles = {
             "risr":       "R_{ISR}",
             "ms_delayed": "M_{S} [TeV]",
+            "abcd":       "R_{ISR}",
         }
         sg_titles = {}
 
@@ -344,6 +558,286 @@ class FitPlotter:
             "x_axis_title":        x_titles.get(bin_scheme, ""),
             "bottom_margin":       bottom_margin,
             "bin_scheme":          bin_scheme,
+        }
+
+    def _build_compressed_final_decorations(self, bin_order, sr_ch=None):
+        """
+        Build compact hierarchical labels for the final compressed fit.
+
+        These labels are intentionally derived from Combine bin-name patterns and
+        channel-aware RISR mappings.  In the final compressed AnalysisConfig,
+        suffixes are not globally meaningful: for DelPho/MixDel, suffix 00 is
+        the high RISR bin while suffix 10 is the medium bin.
+        """
+        bin_labels       = []
+        group_labels     = []
+        sub_group_labels = []
+        separator_bins   = []
+        sub_sep_bins     = []
+        minor_sep_bins   = []
+        sr_bins          = []
+        cursor           = 0
+        current_family   = None
+        current_family_start = 0
+        current_leaf     = None
+
+        def close_leaf(end):
+            if sub_group_labels and sub_group_labels[-1]["end"] is None:
+                sub_group_labels[-1]["end"] = end
+
+        def close_group(end):
+            if group_labels and group_labels[-1]["end"] is None:
+                group_labels[-1]["end"] = end
+
+        for ch, bins in bin_order:
+            display_ch = _compressed_display_key(ch)
+            family = self._compressed_final_family(display_ch)
+            top_label = COMPRESSED_FINAL_TOP_LABELS.get(family, _make_channel_label(display_ch))
+
+            if family != current_family:
+                close_leaf(cursor)
+                close_group(cursor)
+                if current_family is not None and cursor > 0:
+                    separator_bins.append(cursor)
+                group_labels.append({"text": top_label, "start": cursor, "end": None})
+                current_family = family
+                current_family_start = cursor
+                current_leaf = None
+
+            for bin_name in bins:
+                display_bin = _compressed_display_key(bin_name)
+                if family == "MixPrompt":
+                    rel_bin = cursor - current_family_start
+                    leaf = "#gamma_{p} CR" if rel_bin < 3 else "#gamma_{p}+SV SR"
+                else:
+                    leaf = self._compressed_final_leaf_label(display_ch, display_bin, family)
+                if leaf != current_leaf:
+                    close_leaf(cursor)
+                    if current_leaf is not None and cursor > 0:
+                        sub_sep_bins.append(cursor)
+                    sub_group_labels.append({"text": leaf, "start": cursor, "end": None})
+                    current_leaf = leaf
+
+                suf = bin_name[-2:]
+                bin_labels.append(
+                    COMPRESSED_FINAL_RISR_LABELS.get(family, {}).get(suf, RISR_COMPACT_LABELS.get(suf, suf))
+                )
+                if ch == sr_ch:
+                    sr_bins.append(cursor)
+                cursor += 1
+                if cursor > 1:
+                    minor_sep_bins.append(cursor - 1)
+
+        close_leaf(cursor)
+        close_group(cursor)
+        risr_sequence_labels = [
+            {
+                "text": "  ".join(bin_labels[sg["start"]:sg["end"]]),
+                "start": sg["start"],
+                "end": sg["end"],
+            }
+            for sg in sub_group_labels
+        ]
+
+        return {
+            "n_bins":              cursor,
+            "bin_labels":          bin_labels,
+            "risr_sequence_labels": risr_sequence_labels,
+            "group_labels":        group_labels,
+            "sub_group_labels":    sub_group_labels or None,
+            "sub_group_axis_title": "",
+            "separator_bins":      separator_bins,
+            "sub_sep_bins":        sub_sep_bins,
+            "minor_sep_bins":      minor_sep_bins,
+            "section_labels":      None,
+            "section_separator":   None,
+            "x_axis_title":        "R_{ISR}",
+            "bottom_margin":       0.5,
+            "bin_scheme":          "compressed_final",
+            "group_label_text_size": 0.056,
+            "sub_group_label_text_size": 0.066,
+            "bin_label_text_size": 0.084,
+            "x_title_text_size": 0.180,
+            "sub_group_label_y":    0.42,
+            "risr_sequence_y":      0.33,
+            "x_title_y":            0.15,
+            "glossary":            COMPRESSED_FINAL_GLOSSARY,
+            "sr_bins":             sr_bins,
+        }
+
+    def _compressed_final_family(self, name):
+        name = _compressed_display_key(name)
+        if name.startswith("SVonly"):
+            return "SVonly"
+        if name.startswith("DelPho"):
+            return "DelPho"
+        if name.startswith("Eq2Pho"):
+            return "Eq2Pho"
+        if name.startswith(("MixDel", "SVDelPho")):
+            return "MixDel"
+        if name.startswith(("MixPrompt", "SVNoDelPho")):
+            return "MixPrompt"
+        return name.split("_", 1)[0]
+
+    def _compressed_final_leaf_label(self, ch, bin_name, family):
+        ch = _compressed_display_key(ch)
+        bin_name = _compressed_display_key(bin_name)
+        stem = bin_name[:-2]
+
+        if family == "SVonly":
+            if "AnchorCR" in stem:
+                return "Anchor CR"
+            if stem.endswith(("CR", "SR")):
+                return "SV SR"
+
+        if family in ("DelPho", "MixDel"):
+            if "BHEarly" in stem and "NotBH" not in stem:
+                return "BH-"
+            if "BHLate" in stem and "NotBH" not in stem:
+                return "BH+"
+            if "NotBHEarly" in stem:
+                return "!BH-"
+            if "NotBHLate" in stem:
+                return "!BH+"
+            if "AnchorCR" in stem:
+                return "Anch CR"
+            if stem.endswith("CR"):
+                return "#gamma_{d}+SV CR" if family == "MixDel" else "Delayed CR"
+            if stem.endswith("SR"):
+                return "#gamma_{d}+SV SR" if family == "MixDel" else "Delayed SR"
+
+        if family == "Eq2Pho":
+            if "MedIso" in stem:
+                return "MedIso CR"
+            if "TightIso" in stem:
+                return "TightIso SR"
+
+        if family == "MixPrompt":
+            if "AnchorCR" in stem:
+                return "Anch CR"
+            if "SVSR" in stem or stem.endswith("SR"):
+                return "#gamma_{p}+SV SR"
+            if stem.endswith("CR"):
+                return "#gamma_{p} CR"
+
+        return CHANNEL_LABELS.get(ch, _make_channel_label(ch))
+
+    def parse_noncompressed_bin(self, bin_name, fit_channel=None):
+        suffix = _noncompressed_suffix(bin_name)
+        channel = "unknown"
+        subgroup = _make_channel_label(bin_name[:-2])
+        grouping_name = fit_channel or bin_name
+
+        if "GeLep" in bin_name:
+            channel = "lep_sv"
+            subgroup = "SR" if "SRGeLep" in grouping_name else "CR"
+        elif "GeHad" in bin_name:
+            channel = "had_sv"
+            subgroup = "SR" if "SRGeHad" in grouping_name else "CR"
+        elif any(token in bin_name for token in ("BHEarly", "BHLate", "NotBHEarly", "NotBHLate")):
+            channel = "delayed_photon"
+            if "NotBHEarly" in bin_name:
+                subgroup = "!BH-"
+            elif "NotBHLate" in bin_name:
+                subgroup = "!BH+"
+            elif "BHEarly" in bin_name:
+                subgroup = "BH-"
+            else:
+                subgroup = "BH+"
+        elif "eq1Pho" in bin_name:
+            channel = "one_prompt"
+            subgroup = "tight iso" if "TightIsoPrompt" in grouping_name else "med iso"
+        elif "eq2Pho" in bin_name:
+            channel = "two_prompt"
+            subgroup = "tight iso" if "TightIsoPrompt" in grouping_name else "med iso"
+
+        return {
+            "channel": channel,
+            "subgroup": subgroup,
+            "suffix": suffix,
+            "display_label": _noncompressed_mr_label(suffix, channel),
+        }
+
+    def _build_noncompressed_final_decorations(self, bin_order, sr_ch=None):
+        bin_labels       = []
+        group_labels     = []
+        sub_group_labels = []
+        separator_bins   = []
+        sub_sep_bins     = []
+        minor_sep_bins   = []
+        sr_bins          = []
+        cursor           = 0
+        current_channel  = None
+        current_subgroup = None
+
+        def close_subgroup(end):
+            if sub_group_labels and sub_group_labels[-1]["end"] is None:
+                sub_group_labels[-1]["end"] = end
+
+        def close_group(end):
+            if group_labels and group_labels[-1]["end"] is None:
+                group_labels[-1]["end"] = end
+
+        for ch, bins in bin_order:
+            for bin_name in bins:
+                parsed = self.parse_noncompressed_bin(bin_name, fit_channel=ch)
+                channel = parsed["channel"]
+                subgroup = parsed["subgroup"]
+
+                if channel != current_channel:
+                    close_subgroup(cursor)
+                    close_group(cursor)
+                    if current_channel is not None and cursor > 0:
+                        separator_bins.append(cursor)
+                    group_labels.append({
+                        "text": NONCOMPRESSED_FINAL_TOP_LABELS.get(channel, _make_channel_label(ch)),
+                        "start": cursor,
+                        "end": None,
+                    })
+                    current_channel = channel
+                    current_subgroup = None
+
+                if subgroup != current_subgroup:
+                    close_subgroup(cursor)
+                    if current_subgroup is not None and cursor > 0:
+                        sub_sep_bins.append(cursor)
+                    sub_group_labels.append({"text": subgroup, "start": cursor, "end": None})
+                    current_subgroup = subgroup
+
+                bin_labels.append(parsed["display_label"])
+                if ch == sr_ch:
+                    sr_bins.append(cursor)
+                cursor += 1
+                if cursor > 1:
+                    minor_sep_bins.append(cursor - 1)
+
+        close_subgroup(cursor)
+        close_group(cursor)
+
+        return {
+            "n_bins":              cursor,
+            "bin_labels":          bin_labels,
+            "group_labels":        group_labels,
+            "sub_group_labels":    sub_group_labels or None,
+            "sub_group_axis_title": "",
+            "separator_bins":      separator_bins,
+            "sub_sep_bins":        sub_sep_bins,
+            "minor_sep_bins":      minor_sep_bins,
+            "section_labels":      None,
+            "section_separator":   None,
+            "x_axis_title":        "",
+            "bottom_margin":       0.5,
+            "bin_scheme":          "noncompressed_final",
+            "group_label_text_size": 0.056,
+            "sub_group_label_text_size": 0.066,
+            "bin_label_text_size": 0.062,
+            "x_title_text_size": 0.160,
+            "sub_group_label_y":    0.42,
+            "glossary":            NONCOMPRESSED_FINAL_GLOSSARY,
+            "glossary_text_size":   0.034,
+            "glossary_y0":          0.70,
+            "glossary_line_spacing": 0.05,
+            "sr_bins":             sr_bins,
         }
 
     def _build_abcd_grid_decorations(self, abcd_bin_order, sr_ch=None):
@@ -399,15 +893,28 @@ class FitPlotter:
             "sr_bins":             sr_bins,
         }
 
-    def _build_combined_decorations(self, abcd_bin_order, shape_bin_order, sr_ch=None):
+    def _build_combined_decorations(self, abcd_bin_order, shape_bin_order, sr_ch=None,
+                                    shape_bin_scheme="msrs", abcd_bin_scheme="ms_delayed",
+                                    label_scheme="auto"):
         """
         Combined ABCD + shape_transfer decorations with section labels and
         a heavy separator between the two fit components.
         ABCD bins come first, shape_transfer second.
         """
-        abcd_deco  = self._build_decorations(abcd_bin_order,  "ms_delayed", COMBINED_CHANNEL_LABELS, COMBINED_MS_DELAYED_LABELS)
-        shape_deco = self._build_decorations(shape_bin_order, "msrs",       COMBINED_CHANNEL_LABELS)
+        if label_scheme == "compressed-final":
+            return self._build_compressed_final_decorations(abcd_bin_order + shape_bin_order, sr_ch=sr_ch)
+        if label_scheme == "noncompressed-final":
+            return self._build_noncompressed_final_decorations(abcd_bin_order + shape_bin_order, sr_ch=sr_ch)
+
+        abcd_bl_map  = COMBINED_MS_DELAYED_LABELS if abcd_bin_scheme == "ms_delayed" else None
+        shape_bl_map = RISR_COMPACT_LABELS if shape_bin_scheme == "risr" else None
+        abcd_deco  = self._build_decorations(abcd_bin_order,  abcd_bin_scheme,  COMBINED_CHANNEL_LABELS, abcd_bl_map)
+        shape_deco = self._build_decorations(shape_bin_order, shape_bin_scheme, COMBINED_CHANNEL_LABELS, shape_bl_map)
         n_abcd     = abcd_deco["n_bins"]
+        # For single-bin ABCD, suppress per-bin labels and draw one centred annotation instead
+        abcd_single = (abcd_bin_scheme == "abcd")
+        abcd_bin_labels = [""] * n_abcd if abcd_single else abcd_deco["bin_labels"]
+        abcd_annotation = {"text": "R_{ISR}^{hi}", "start": 0, "end": n_abcd} if abcd_single else None
         n_total    = n_abcd + shape_deco["n_bins"]
 
         def _offset(lst, off):
@@ -420,9 +927,27 @@ class FitPlotter:
                 if ch == sr_ch:
                     sr_bins.extend(range(gl["start"], gl["end"]))
 
+        if shape_bin_scheme == "risr":
+            glossary = [
+                ("R_{ISR}^{lo}",  "[0.4, 0.6)"),
+                ("R_{ISR}^{med}", "[0.6, 0.75)"),
+                ("R_{ISR}^{hi}",  "#geq 0.75"),
+                ("R_{ISR}^{hi-}", "[0.75, 0.9)"),
+                ("R_{ISR}^{hi+}", "#geq 0.9"),
+            ]
+        else:
+            glossary = [
+                ("M_{S}^{CR,-}", "[0.7, 1) TeV"),
+                ("M_{S}^{CR,+}", "#geq 1 TeV"),
+                ("M_{S}^{SR,-}", "[1, 1.5) TeV"),
+                ("M_{S}^{SR,+}", "#geq 1.5 TeV"),
+                ("R_{S}^{-}",    "[0.15, 0.2)"),
+                ("R_{S}^{+}",    "#geq 0.2"),
+            ]
+
         return {
             "n_bins":      n_total,
-            "bin_labels":  abcd_deco["bin_labels"] + shape_deco["bin_labels"],
+            "bin_labels":  abcd_bin_labels + shape_deco["bin_labels"],
             "group_labels": (abcd_deco["group_labels"]
                              + _offset(shape_deco["group_labels"], n_abcd)),
             "sub_group_labels": (_offset(shape_deco["sub_group_labels"] or [], n_abcd) or None),
@@ -435,6 +960,8 @@ class FitPlotter:
             "x_axis_title":  "",
             "bottom_margin": 0.52,
             "sr_bins":       sr_bins,
+            "glossary":      glossary,
+            "abcd_annotation": abcd_annotation,
         }
 
     # ── Canvas drawing: standard ──────────────────────────────────────────────
@@ -536,7 +1063,9 @@ class FitPlotter:
         g_data.Draw("PZ SAME")
 
         rp = 1.0 - right_m  # left edge of right-margin panel in pad1 NDC
-        if right_panel:
+        if right_panel and deco.get("bin_scheme") == "noncompressed_final":
+            leg = ROOT.TLegend(rp + 0.01, 0.75, 0.995, 0.87)
+        elif right_panel:
             leg = ROOT.TLegend(rp + 0.01, 0.72, 0.995, 0.87)
         else:
             leg = ROOT.TLegend(0.77, 0.42, 1., 0.7)
@@ -549,24 +1078,31 @@ class FitPlotter:
 
         rp_objs = []
         if right_panel:
-            defs = [
+            defs = deco.get("glossary", [
                 ("M_{S}^{CR,-}", "[0.7, 1) TeV"),
                 ("M_{S}^{CR,+}", "#geq 1 TeV"),
                 ("M_{S}^{SR,-}", "[1, 1.5) TeV"),
                 ("M_{S}^{SR,+}", "#geq 1.5 TeV"),
                 ("R_{S}^{-}",    "[0.15, 0.2)"),
                 ("R_{S}^{+}",    "#geq 0.2"),
-                #("#gamma^{iso,1}", "ISO #in [0.4, 0.5)"),
-                #("#gamma^{iso,2}", "ISO #in [0.5, 0.52)"),
-                #("SV_{qq}^{CR,-}", "d_{xy}/#sigma_{d} #in [100, 600)"),
-                #("SV_{qq}^{CR,+}", "d_{xy}/#sigma_{d} #in [600, 1000)"),
-            ]
+            ])
             lt_key = ROOT.TLatex(); lt_key.SetNDC(True)
-            lt_key.SetTextFont(42); lt_key.SetTextSize(0.052); lt_key.SetTextAlign(12)
-            y0 = 0.65
-            dy = 0.075
-            for i, (sym, rng) in enumerate(defs):
-                lt_key.DrawLatex(rp + 0.01, y0 - i * dy, f"{sym}  :  {rng}")
+            lt_key.SetTextFont(42)
+            lt_key.SetTextSize(deco.get("glossary_text_size", 0.034 if len(defs) > 10 else 0.052))
+            lt_key.SetTextAlign(12)
+            y0 = deco.get("glossary_y0", 0.6)
+            dy = deco.get("glossary_line_spacing", 0.040 if len(defs) > 10 else 0.075)
+            y_key = y0
+            for sym, rng in defs:
+                if isinstance(rng, tuple):
+                    lt_key.DrawLatex(rp + 0.01, y_key, f"{sym}  :")
+                    for line in rng:
+                        y_key -= dy
+                        lt_key.DrawLatex(rp + 0.022, y_key, line)
+                    y_key -= dy
+                else:
+                    lt_key.DrawLatex(rp + 0.01, y_key, f"{sym}  :  {rng}")
+                    y_key -= dy
             rp_objs.append(lt_key)
 
         if right_panel:
@@ -759,18 +1295,25 @@ class FitPlotter:
             sg = self._draw_sub_group_labels(pr, deco, lm, rm) if has_sub else []
             bl = self._draw_bin_labels(pr, deco, lm, rm, has_sub)
 
-            # Sub-separators within this channel (MsRs only)
+            # Local separators within each side-by-side panel.
             sub_lines = []
-            if deco.get("sub_sep_bins"):
-                dw = 1.0 - lm - rm
-                for sb in deco["sub_sep_bins"]:
+            dw = 1.0 - lm - rm
+            for key, color, width, style in [
+                ("minor_sep_bins", ROOT.kGray + 1, 1, 3),
+                ("sub_sep_bins",   ROOT.kGray + 2, 2, 2),
+                ("separator_bins", ROOT.kBlack if deco.get("bin_scheme") in ("compressed_final", "noncompressed_final") else ROOT.kGray + 2,
+                 3 if deco.get("bin_scheme") in ("compressed_final", "noncompressed_final") else 2,
+                 1 if deco.get("bin_scheme") in ("compressed_final", "noncompressed_final") else 2),
+            ]:
+                for sb in deco.get(key, []):
                     x = lm + (sb / nb) * dw
                     for pad in [pm, pr]:
                         pad.cd()
                         sl = ROOT.TLine(); sl.SetNDC(True)
-                        sl.SetLineColor(ROOT.kGray + 1)
-                        sl.SetLineWidth(1); sl.SetLineStyle(3)
-                        sl.DrawLine(x, 0.04, x, 0.95)
+                        sl.SetLineColor(color)
+                        sl.SetLineWidth(width); sl.SetLineStyle(style)
+                        y_low = 0.52 if deco.get("bin_scheme") in ("compressed_final", "noncompressed_final") and pad == pr else 0.04
+                        sl.DrawLine(x, y_low, x, 0.95)
                         sub_lines.append(sl)
 
             keep.extend([h_bkg, h_bkg_err, g_data, h_ratio, h_rband, unity, grp, sg, bl, sub_lines])
@@ -797,7 +1340,9 @@ class FitPlotter:
         pad.cd()
         n, dw = deco["n_bins"], 1.0 - left_m - right_m
         lt = ROOT.TLatex(); lt.SetNDC(True)
-        lt.SetTextFont(42); lt.SetTextSize(0.062); lt.SetTextAlign(22)
+        lt.SetTextFont(42)
+        lt.SetTextSize(deco.get("group_label_text_size", 0.062))
+        lt.SetTextAlign(22)
         gap = 0.035  # half-gap between two stacked lines
         for g in deco["group_labels"]:
             cx   = (g["start"] + g["end"]) / 2.0
@@ -818,7 +1363,10 @@ class FitPlotter:
         objs  = []
 
         lt = ROOT.TLatex(); lt.SetNDC(True)
-        lt.SetTextFont(42); lt.SetTextSize(0.12); lt.SetTextAlign(22)
+        lt.SetTextFont(42)
+        lt.SetTextSize(deco.get("sub_group_label_text_size", 0.12))
+        lt.SetTextAlign(22)
+        y_pos = deco.get("sub_group_label_y", y_pos)
         for sg in deco["sub_group_labels"]:
             cx = (sg["start"] + sg["end"]) / 2.0
             lt.DrawLatex(left_m + (cx / n) * dw, y_pos, sg["text"])
@@ -841,8 +1389,31 @@ class FitPlotter:
         sect_sep = deco.get("section_separator")
 
         is_risr = deco.get("bin_scheme") == "risr"
+        is_compressed_final = deco.get("bin_scheme") == "compressed_final"
+        is_noncompressed_final = deco.get("bin_scheme") == "noncompressed_final"
+        if is_noncompressed_final:
+            y_bin = 0.3 if has_sub_groups else 0.285
         lt = ROOT.TLatex(); lt.SetNDC(True)
-        lt.SetTextFont(42); lt.SetTextSize(0.13)
+        lt.SetTextFont(42)
+        lt.SetTextSize(deco.get("bin_label_text_size", 0.13))
+        if is_compressed_final:
+            lt.SetTextAlign(22)
+            for seq in deco.get("risr_sequence_labels", []):
+                cx = (seq["start"] + seq["end"]) / 2.0
+                x = left_m + (cx / n) * dw
+                lt.DrawLatex(x, deco.get("risr_sequence_y", 0.205), seq["text"])
+            objs = [lt]
+
+            xt = deco.get("x_axis_title", "")
+            if xt:
+                tlt = ROOT.TLatex(); tlt.SetNDC(True)
+                tlt.SetTextFont(42)
+                tlt.SetTextSize(deco.get("x_title_text_size", 0.17))
+                tlt.SetTextAlign(22)
+                tlt.DrawLatex(left_m + 0.5 * dw, deco.get("x_title_y", 0.052), xt)
+                objs.append(tlt)
+            return objs
+
         if is_risr:
             lt.SetTextAngle(-20)
             lt.SetTextAlign(12)  # left end at bin left-edge, text slopes down-right into margin
@@ -854,13 +1425,28 @@ class FitPlotter:
             else:
                 x = left_m + ((i + 0.5) / n) * dw  # centre of bin
             y = y_bin + (0.04 if is_risr else 0.0) + (abcd_y_offset if sect_sep is not None and i < sect_sep else 0.0)
+            if is_compressed_final:
+                y = 0.25
             lt.DrawLatex(x, y, label)
 
         objs = [lt]
+
+        ann = deco.get("abcd_annotation")
+        if ann:
+            cx    = (ann["start"] + ann["end"]) / 2.0
+            x_ann = left_m + (cx / n) * dw
+            y_ann = y_bin + abcd_y_offset
+            ann_lt = ROOT.TLatex(); ann_lt.SetNDC(True)
+            ann_lt.SetTextFont(42); ann_lt.SetTextSize(0.13); ann_lt.SetTextAlign(22)
+            ann_lt.DrawLatex(x_ann, y_ann, ann["text"])
+            objs.append(ann_lt)
+
         xt = deco.get("x_axis_title", "")
         if xt:
             tlt = ROOT.TLatex(); tlt.SetNDC(True)
-            tlt.SetTextFont(42); tlt.SetTextSize(0.17); tlt.SetTextAlign(22)
+            tlt.SetTextFont(42)
+            tlt.SetTextSize(deco.get("x_title_text_size", 0.17))
+            tlt.SetTextAlign(22)
             tlt.DrawLatex(left_m + 0.5 * dw, y_title, xt)
             objs.append(tlt)
         return objs
@@ -876,19 +1462,30 @@ class FitPlotter:
 
         objs = [ov]
 
+        #y1 = 0.08 if deco.get("bin_scheme") == "compressed_final" else 0.08
+        y1 = 0.08
         y2 = 0.91
+
+        for sb in deco.get("minor_sep_bins", []):
+            x = left_m + (sb / n) * dw
+            ln = ROOT.TLine(); ln.SetNDC(True)
+            ln.SetLineColor(ROOT.kGray + 1); ln.SetLineWidth(1); ln.SetLineStyle(3)
+            ln.DrawLine(x, y1, x, y2); objs.append(ln)
 
         for sb in deco.get("sub_sep_bins", []):
             x = left_m + (sb / n) * dw
             ln = ROOT.TLine(); ln.SetNDC(True)
-            ln.SetLineColor(ROOT.kGray + 1); ln.SetLineWidth(1); ln.SetLineStyle(3)
-            ln.DrawLine(x, 0.08, x, y2); objs.append(ln)
+            ln.SetLineColor(ROOT.kGray + 2); ln.SetLineWidth(2); ln.SetLineStyle(2)
+            ln.DrawLine(x, y1, x, y2); objs.append(ln)
 
         for sb in deco.get("separator_bins", []):
             x = left_m + (sb / n) * dw
             ln = ROOT.TLine(); ln.SetNDC(True)
-            ln.SetLineColor(ROOT.kGray + 2); ln.SetLineWidth(2); ln.SetLineStyle(2)
-            ln.DrawLine(x, 0.08, x, y2); objs.append(ln)
+            if deco.get("bin_scheme") in ("compressed_final", "noncompressed_final"):
+                ln.SetLineColor(ROOT.kBlack); ln.SetLineWidth(3); ln.SetLineStyle(1)
+            else:
+                ln.SetLineColor(ROOT.kGray + 2); ln.SetLineWidth(2); ln.SetLineStyle(2)
+            ln.DrawLine(x, y1, x, y2); objs.append(ln)
 
         ss = deco.get("section_separator")
         if ss is not None:

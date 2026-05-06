@@ -14,7 +14,11 @@ format: pdf
 output: run2_nhad1
 
 signal:
-  - /eos/.../SMS_*_ct0p1_rjrskim.root
+  - /eos/.../SMS_*_ct0p1_rjrskim.root        # plain path/glob — scale defaults to 1.0
+  - name: SMS ct5
+    scale: 10.0                               # optional per-group weight multiplier
+    files:
+      - /eos/.../SMS_*_ct5_rjrskim.root
 
 background:
   - name: QCD multijets
@@ -130,8 +134,9 @@ def load_input_config(yaml_path):
 
     Returns a dict with:
       signal_files  -- flat list of expanded signal file paths
-      bg_groups     -- list of {name, files, combine} dicts
-      data_groups   -- list of {name, files, combine} dicts
+      signal_groups -- list of {name, files, combine, scale} dicts for signal
+      bg_groups     -- list of {name, files, combine, scale} dicts
+      data_groups   -- list of {name, files, combine, scale} dicts
       overrides     -- dict of optional CLI-level overrides (lumi, energy, …)
     """
     with open(yaml_path) as f:
@@ -139,11 +144,12 @@ def load_input_config(yaml_path):
 
     base_dir = cfg.get('base_dir', None)
 
-    # Signal: flat list of paths/globs (no grouping for signals)
+    # Signal: supports the same group syntax as background (name, files, scale, combine)
     raw_signal = cfg.get('signal', [])
     if isinstance(raw_signal, str):
         raw_signal = [raw_signal]
-    signal_files = _expand_globs(raw_signal, base_dir)
+    signal_groups = _parse_groups(raw_signal, base_dir)
+    signal_files = [f for g in signal_groups for f in g['files']]
 
     bg_groups = _parse_groups(cfg.get('background', []), base_dir)
     data_groups = _parse_groups(cfg.get('data', []), base_dir)
@@ -167,6 +173,7 @@ def load_input_config(yaml_path):
 
     return {
         'signal_files': signal_files,
+        'signal_groups': signal_groups,
         'bg_groups': bg_groups,
         'data_groups': data_groups,
         'overrides': overrides,

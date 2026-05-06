@@ -17,12 +17,13 @@ def _merge_chunks(chunks):
 
 class DataLoader:
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
-                 analysis_mode='uncompressed', isr_pt_cut=None, n_workers=1):
+                 analysis_mode='uncompressed', isr_pt_cut=None, n_workers=1, verbose=False):
         self.tree_name = tree_name
         self.luminosity = luminosity
         self.analysis_mode = analysis_mode
         self.isr_pt_cut = isr_pt_cut
         self.n_workers = max(1, int(n_workers))
+        self.verbose = verbose
         self.selection_manager = SelectionManager()
         self.loading_summary = {
             'data_types_loaded': set(),
@@ -122,7 +123,8 @@ class DataLoader:
         all_data = {flag: {} for flag in final_state_flags}
         
         for file_path in file_paths:
-            print(f"Loading {file_path}...")
+            if self.verbose:
+                print(f"Loading {file_path}...")
             try:
                 with uproot.open(file_path) as f:
                     if self.tree_name not in f:
@@ -247,7 +249,8 @@ class DataLoader:
 
         if self.n_workers > 1 and len(file_paths) > 1:
             from concurrent.futures import ProcessPoolExecutor, as_completed
-            print(f"  Parallel loading: {len(file_paths)} files across {self.n_workers} workers")
+            if self.verbose:
+                print(f"  Parallel loading: {len(file_paths)} files across {self.n_workers} workers")
             with ProcessPoolExecutor(max_workers=self.n_workers) as pool:
                 futures = {
                     pool.submit(self._load_one_file, fp, branches, event_flags, custom_cuts, is_data): fp
@@ -341,7 +344,8 @@ class DataLoader:
         event_result = {}
         custom_result = {}
 
-        print(f"Loading {file_path}...  [RSS {self._rss_mb():.0f} MB]")
+        if self.verbose:
+            print(f"Loading {file_path}...  [RSS {self._rss_mb():.0f} MB]")
         try:
             with uproot.open(file_path) as f:
                 if self.tree_name not in f:
@@ -356,7 +360,7 @@ class DataLoader:
                 _pho_requested = {'baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
                                   'baseLinePhoton_isoANNScore', 'nBaseLinePhotons'}
                 _pho_missing = _pho_requested - tree_keys
-                if _pho_missing and custom_cuts:
+                if _pho_missing and custom_cuts and self.verbose:
                     print(f"  Note: photon branch(es) absent from tree: {sorted(_pho_missing)}")
                     print(f"  Available photon-like keys: {sorted(k for k in tree_keys if 'oto' in k or 'Pho' in k)[:10]}")
                 cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
@@ -372,7 +376,8 @@ class DataLoader:
                         'rjrIsr_PtIsr' in available_branches):
                     cut_expr += f" & (rjrIsr_PtIsr >= {self.isr_pt_cut})"
 
-                print(f"  tree entries: {n_entries:,}  |  uproot cut: {cut_expr}")
+                if self.verbose:
+                    print(f"  tree entries: {n_entries:,}  |  uproot cut: {cut_expr}")
 
                 event_chunks = {flag: [] for flag in event_flags}
                 custom_chunks = {f"CustomRegion{i+1}": [] for i in range(len(custom_cuts))}
@@ -487,17 +492,17 @@ class DataLoader:
                     _trim()
 
                 # Per-file summary
-                print(f"  loaded {total_loaded:,} evts after uproot cut  |  "
-                      f"{total_base:,} pass base mask  |  RSS {self._rss_mb():.0f} MB")
-                for i, cut in enumerate(custom_cuts):
-                    # Estimate accumulated array memory
-                    acc_mb = 0
-                    region = f"CustomRegion{i+1}"
-                    for chunk_vars in custom_chunks[region]:
-                        acc_mb += sum(a.nbytes for a in chunk_vars.values()) / 1e6
-                    print(f"  custom cut {i+1}: {custom_pass[i]:,} events pass cut  |  "
-                          f"{custom_stored_events[i]:,} stored entries  |  "
-                          f"accumulated {acc_mb:.1f} MB in custom_chunks")
+                if self.verbose:
+                    print(f"  loaded {total_loaded:,} evts after uproot cut  |  "
+                          f"{total_base:,} pass base mask  |  RSS {self._rss_mb():.0f} MB")
+                    for i, cut in enumerate(custom_cuts):
+                        acc_mb = 0
+                        region = f"CustomRegion{i+1}"
+                        for chunk_vars in custom_chunks[region]:
+                            acc_mb += sum(a.nbytes for a in chunk_vars.values()) / 1e6
+                        print(f"  custom cut {i+1}: {custom_pass[i]:,} events pass cut  |  "
+                              f"{custom_stored_events[i]:,} stored entries  |  "
+                              f"accumulated {acc_mb:.1f} MB in custom_chunks")
 
                 # Merge chunks
                 for fs_flag in event_flags:

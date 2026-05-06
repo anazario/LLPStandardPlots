@@ -267,6 +267,8 @@ def parse_arguments():
                        help='Minimum pT(ISR) cut in GeV (compressed mode only). Default: 700 when compressed mode is used.')
     parser.add_argument('--workers', type=int, default=1,
                        help='Number of parallel worker processes for file loading (default: 1)')
+    parser.add_argument('--verbose', action='store_true', default=False,
+                       help='Print per-file loading details (entries, cuts, RSS)')
     parser.add_argument('--lumi', type=float, default=400.0, help='Integrated luminosity in fb^-1 (default: 400)')
     parser.add_argument('--energy', type=float, default=13.6, help='Centre-of-mass energy in TeV (default: 13.6)')
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
@@ -393,7 +395,7 @@ def main():
 
     loader = DataLoader(args.tree, luminosity=args.lumi,
                        analysis_mode=analysis_mode, isr_pt_cut=isr_pt_cut,
-                       n_workers=args.workers)
+                       n_workers=args.workers, verbose=args.verbose)
     plotter1d = Plotter1D(style)
     plotter2d = Plotter2D(style)
     plotter_datamc = PlotterDataMC(style)

@@ -1,4 +1,4 @@
-base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v49
+base_dir: /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49
 
 lumi: 200.0
 energy: 13.6
@@ -13,27 +13,27 @@ signal:
 background:
   - name: QCD multijets
     files:
-      - QCD_R18_*
+      - background/QCD_R18.root
   - name: W+jets
     files:
-      - WJets_R18_*
+      - background/WJets_R18.root
   - name: Z+jets
     files:
-      - ZJets_R18_*
+      - background/ZJets_R18.root
   - name: t#bar{t}+jets
     files:
-      - TTJets_R18_*
+      - background/TTJets_R18.root
   - name: "#gamma+jets"
     files:
-      - GJets_R18_*
+      - background/GJets_R18.root
 
 data:
   - name: Run 2+3
     combine: true
     files:
-      - MET_R16_*
-      - MET_R17_*
-      - MET_R18_*
-      - JetMET_R22_*
-      - JetMET_R23_*
-      - JetMET_R24_*
+      - data/MET_R16.root
+      - data/MET_R17.root
+      - data/MET_R18.root
+      - data/JetMET_R22.root
+      - data/JetMET_R23.root
+      - data/JetMET_R24.root

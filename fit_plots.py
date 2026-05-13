@@ -47,6 +47,8 @@ def parse_args():
                    help="Axis/category label scheme (default: auto, current behavior)")
     p.add_argument("--sr-color", action="store_true", default=False,
                    help="Highlight predicted SR bin in orange on ABCD plots")
+    p.add_argument("--data-mc", action="store_true", default=False,
+                   help="Draw stacked per-process Data/MC plots instead of total-background plots")
     return p.parse_args()
 
 
@@ -67,6 +69,7 @@ def main():
         mode_override=args.mode,
         label_scheme=args.label_scheme,
         show_sr=args.sr_color,
+        data_mc=args.data_mc,
     )
 
 

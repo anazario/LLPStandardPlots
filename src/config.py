@@ -141,6 +141,14 @@ class AnalysisConfig:
             'scale': 1.0,
             'is_vector': False
         },
+        'nBaseLinePhotons': {
+            'name': 'n_baseline_photons',
+            'label': 'N_{#gamma}',
+            'bins': 3,
+            'range': (0, 3),
+            'scale': 1.0,
+            'is_vector': False
+        },
         # ISR variables (compressed scenario)
         'rjrIsr_Ms': {
             'name': 'isr_ms',
@@ -222,6 +230,33 @@ class AnalysisConfig:
             'label': 't_{#gamma}^{w}/#sigma_{t}',
             'bins': 60,
             'range': (-5, 10),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': False
+        },
+        'baseLinePhoton_Pt': {
+            'name': 'photon_pt',
+            'label': 'p_{T}^{#gamma} [GeV]',
+            'bins': 50,
+            'range': (0, 1000),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': False
+        },
+        'baseLinePhoton_Eta': {
+            'name': 'photon_eta',
+            'label': '#eta_{#gamma}',
+            'bins': 50,
+            'range': (-2.5, 2.5),
+            'scale': 1.0,
+            'is_vector': True,
+            'mc_only': False
+        },
+        'baseLinePhoton_isoANNScore': {
+            'name': 'photon_isoann',
+            'label': 'Photon iso ANN score',
+            'bins': 50,
+            'range': (0, 1),
             'scale': 1.0,
             'is_vector': True,
             'mc_only': False

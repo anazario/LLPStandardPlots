@@ -26,6 +26,9 @@ def _merge_chunks(chunks):
     return merged
 
 class DataLoader:
+    _PROMPT_PHO_CR_COMPRESSED_GE1 = 'PROMPT_PHO_CR_COMPRESSED_GE1'
+    _PROMPT_PHO_CR_UNCOMPRESSED_GE1 = 'PROMPT_PHO_CR_UNCOMPRESSED_GE1'
+
     def __init__(self, tree_name='kuSkimTree', luminosity=400,
                  analysis_mode='uncompressed', isr_pt_cut=None, n_workers=1, verbose=False):
         self.tree_name = tree_name
@@ -69,6 +72,8 @@ class DataLoader:
             # Photon variables (Gen branches absent in data files; handled gracefully)
             'nBaseLinePhotons',
             'baseLinePhoton_WTimeSig',
+            'baseLinePhoton_Pt',
+            'baseLinePhoton_Eta',
             'baseLinePhoton_beamHaloCNNScore',
             'baseLinePhoton_isoANNScore',
             'baseLinePhoton_GenTimeSig',
@@ -295,10 +300,95 @@ class DataLoader:
     # uproot's C-level cut expression.  Jagged branches cannot be used there.
     _KNOWN_SCALAR_BRANCHES = {
         'SV_nHadronic', 'SV_nLeptonic', 'nSelPhotons', 'selCMet', 'evtFillWgt',
+        'nBaseLinePhotons',
         'rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr', 'rjrIsr_RIsr', 'rjrIsr_Rs',
         'rjrIsrPTS', 'rjrIsrSdphiBV', 'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects',
         'rjr_Ms', 'rjr_Rs', 'rjrPTS',
     }
+
+    def _is_named_custom_cut(self, cut_name):
+        return cut_name in {
+            self._PROMPT_PHO_CR_COMPRESSED_GE1,
+            self._PROMPT_PHO_CR_UNCOMPRESSED_GE1,
+        }
+
+    def _evaluate_named_custom_cut(self, cut_name, chunk, n_events):
+        """Evaluate named analysis cuts that need vector-aware object logic."""
+        if cut_name == self._PROMPT_PHO_CR_COMPRESSED_GE1:
+            return self._prompt_photon_cr_compressed_ge1(chunk, n_events)
+        if cut_name == self._PROMPT_PHO_CR_UNCOMPRESSED_GE1:
+            return self._prompt_photon_cr_uncompressed_ge1(chunk, n_events)
+        return None
+
+    @staticmethod
+    def _event_photon_arrays(chunk, idx):
+        required = [
+            'nBaseLinePhotons',
+            'baseLinePhoton_WTimeSig',
+            'baseLinePhoton_isoANNScore',
+            'baseLinePhoton_Pt',
+            'baseLinePhoton_Eta',
+        ]
+        if any(name not in chunk for name in required):
+            return None
+
+        n_pho = int(chunk['nBaseLinePhotons'][idx])
+        if n_pho < 1:
+            return None
+
+        times = np.asarray(chunk['baseLinePhoton_WTimeSig'][idx], dtype=float)
+        iso = np.asarray(chunk['baseLinePhoton_isoANNScore'][idx], dtype=float)
+        pts = np.asarray(chunk['baseLinePhoton_Pt'][idx], dtype=float)
+        etas = np.asarray(chunk['baseLinePhoton_Eta'][idx], dtype=float)
+        if min(len(times), len(iso), len(pts), len(etas)) < n_pho:
+            return None
+
+        return n_pho, times[:n_pho], iso[:n_pho], pts[:n_pho], etas[:n_pho]
+
+    def _prompt_photon_cr_compressed_ge1(self, chunk, n_events):
+        """Compressed prompt-photon CR: prompt timing and no tight ANN photons."""
+        mask = np.zeros(n_events, dtype=bool)
+        for idx in range(n_events):
+            values = self._event_photon_arrays(chunk, idx)
+            if values is None:
+                continue
+            _, times, iso, _, _ = values
+            mask[idx] = np.all(np.isfinite(times)) and np.all(np.isfinite(iso)) and (
+                np.all(np.abs(times) < 2.5) and np.all(iso < 0.96)
+            )
+        return mask
+
+    def _prompt_photon_cr_uncompressed_ge1(self, chunk, n_events):
+        """Uncompressed prompt-photon CR using BigGuy pt-dependent ANN windows."""
+        mask = np.zeros(n_events, dtype=bool)
+        for idx in range(n_events):
+            values = self._event_photon_arrays(chunk, idx)
+            if values is None:
+                continue
+            n_pho, times, iso, pts, etas = values
+            if not (
+                np.all(np.isfinite(times)) and np.all(np.isfinite(iso)) and
+                np.all(np.isfinite(pts)) and np.all(np.isfinite(etas))
+            ):
+                continue
+            if not np.all(np.abs(times) < 2.5):
+                continue
+            if not np.all(np.abs(etas) < 1.479):
+                continue
+
+            if n_pho == 1:
+                high_pt = pts > 100
+                lower = np.where(high_pt, -0.000198 * pts + 0.7698, 0.75)
+                upper = np.where(high_pt, -0.000198 * pts + 1.0188, 0.999)
+            elif n_pho == 2:
+                high_pt = pts > 100
+                lower = np.where(high_pt, -0.0001 * pts + 0.76, 0.75)
+                upper = np.where(high_pt, -0.0001 * pts + 0.96, 0.95)
+            else:
+                continue
+
+            mask[idx] = np.all((iso >= lower) & (iso < upper))
+        return mask
 
     def _build_scalar_prefilter(self, custom_cuts, available_branches, tree):
         """
@@ -324,6 +414,8 @@ class DataLoader:
 
         per_cut_filters = []
         for cut in custom_cuts:
+            if self._is_named_custom_cut(cut):
+                continue
             normalized = cut.replace('&&', ' & ').replace('||', ' | ')
             or_clauses = self._split_respecting_parens(normalized, ' | ')
 
@@ -372,6 +464,7 @@ class DataLoader:
                 available_branches = [b for b in branches if b in tree_keys]
                 # Warn once if requested photon branches are missing from this tree
                 _pho_requested = {'baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
+                                  'baseLinePhoton_Pt', 'baseLinePhoton_Eta',
                                   'baseLinePhoton_isoANNScore', 'nBaseLinePhotons'}
                 _pho_missing = _pho_requested - tree_keys
                 if _pho_missing and custom_cuts and self.verbose:
@@ -459,48 +552,53 @@ class DataLoader:
                     for i, custom_cut in enumerate(custom_cuts):
                         custom_region_name = f"CustomRegion{i+1}"
                         try:
-                            cut_variables = {
-                                'nSelPhotons': chunk.get("nSelPhotons", np.zeros(n_events)),
-                                'SV_nHadronic': chunk.get("SV_nHadronic", np.zeros(n_events)),
-                                'SV_nLeptonic': chunk.get("SV_nLeptonic", np.zeros(n_events)),
-                                'selCMet':      chunk.get("selCMet",      np.zeros(n_events)),
-                            }
-                            # Add SV object variables (jagged) as first-element scalars per event
-                            for sv_var in ['HadronicSV_dxySig', 'HadronicSV_mass', 'HadronicSV_dxy',
-                                           'HadronicSV_nTracks', 'LeptonicSV_dxySig',
-                                           'LeptonicSV_mass', 'LeptonicSV_dxy']:
-                                if sv_var in chunk:
-                                    cut_variables[sv_var] = np.array(
-                                        [float(a[0]) if len(a) > 0 else np.nan
-                                         for a in chunk[sv_var]], dtype=float)
-                            # Add photon variables (jagged) as first-element scalars per event.
-                            # Default to NaN when a branch is absent so photon cuts fail
-                            # gracefully on files produced without photon reconstruction.
-                            _nan_pho = np.full(n_events, np.nan)
-                            for pho_var in ['baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
-                                            'baseLinePhoton_isoANNScore', 'baseLinePhoton_GenTimeSig']:
-                                if pho_var in chunk:
-                                    cut_variables[pho_var] = np.array(
-                                        [float(a[0]) if len(a) > 0 else np.nan
-                                         for a in chunk[pho_var]], dtype=float)
-                                else:
-                                    cut_variables[pho_var] = _nan_pho
-                            # nBaseLinePhotons: default 0 (no photons) when branch is absent
-                            cut_variables['nBaseLinePhotons'] = chunk.get(
-                                'nBaseLinePhotons', np.zeros(n_events, dtype=np.int32))
-                            if self.analysis_mode == AnalysisMode.COMPRESSED:
-                                for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
-                                               'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
-                                               'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
-                                    if isr_var in chunk:
-                                        cut_variables[isr_var] = chunk[isr_var]
-                            elif self.analysis_mode == AnalysisMode.UNCOMPRESSED:
-                                for unc_var in ['rjr_Ms', 'rjr_Rs', 'rjrPTS']:
-                                    if unc_var in chunk:
-                                        cut_variables[unc_var] = np.array(
+                            named_mask = self._evaluate_named_custom_cut(custom_cut, chunk, n_events)
+                            if named_mask is not None:
+                                custom_mask = named_mask
+                            else:
+                                cut_variables = {
+                                    'nSelPhotons': chunk.get("nSelPhotons", np.zeros(n_events)),
+                                    'SV_nHadronic': chunk.get("SV_nHadronic", np.zeros(n_events)),
+                                    'SV_nLeptonic': chunk.get("SV_nLeptonic", np.zeros(n_events)),
+                                    'selCMet':      chunk.get("selCMet",      np.zeros(n_events)),
+                                }
+                                # Add SV object variables (jagged) as first-element scalars per event
+                                for sv_var in ['HadronicSV_dxySig', 'HadronicSV_mass', 'HadronicSV_dxy',
+                                               'HadronicSV_nTracks', 'LeptonicSV_dxySig',
+                                               'LeptonicSV_mass', 'LeptonicSV_dxy']:
+                                    if sv_var in chunk:
+                                        cut_variables[sv_var] = np.array(
                                             [float(a[0]) if len(a) > 0 else np.nan
-                                             for a in chunk[unc_var]], dtype=float)
-                            custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
+                                             for a in chunk[sv_var]], dtype=float)
+                                # Add photon variables (jagged) as first-element scalars per event.
+                                # Default to NaN when a branch is absent so photon cuts fail
+                                # gracefully on files produced without photon reconstruction.
+                                _nan_pho = np.full(n_events, np.nan)
+                                for pho_var in ['baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
+                                                'baseLinePhoton_Pt', 'baseLinePhoton_Eta',
+                                                'baseLinePhoton_isoANNScore', 'baseLinePhoton_GenTimeSig']:
+                                    if pho_var in chunk:
+                                        cut_variables[pho_var] = np.array(
+                                            [float(a[0]) if len(a) > 0 else np.nan
+                                             for a in chunk[pho_var]], dtype=float)
+                                    else:
+                                        cut_variables[pho_var] = _nan_pho
+                                # nBaseLinePhotons: default 0 (no photons) when branch is absent
+                                cut_variables['nBaseLinePhotons'] = chunk.get(
+                                    'nBaseLinePhotons', np.zeros(n_events, dtype=np.int32))
+                                if self.analysis_mode == AnalysisMode.COMPRESSED:
+                                    for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
+                                                   'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
+                                                   'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
+                                        if isr_var in chunk:
+                                            cut_variables[isr_var] = chunk[isr_var]
+                                elif self.analysis_mode == AnalysisMode.UNCOMPRESSED:
+                                    for unc_var in ['rjr_Ms', 'rjr_Rs', 'rjrPTS']:
+                                        if unc_var in chunk:
+                                            cut_variables[unc_var] = np.array(
+                                                [float(a[0]) if len(a) > 0 else np.nan
+                                                 for a in chunk[unc_var]], dtype=float)
+                                custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
                             combined_mask = base_mask & custom_mask
                         except Exception as e:
                             print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
@@ -642,8 +740,6 @@ class DataLoader:
                             extracted_data[f'{var_key}_weights'].append(base_weight)
 
                 elif var_key.startswith('baseLinePhoton_'):
-                    if self.analysis_mode == AnalysisMode.COMPRESSED:
-                        continue
                     photon_array = data[var_key][idx]
                     for ph_val in photon_array:
                         scaled_val = ph_val * var_config['scale']

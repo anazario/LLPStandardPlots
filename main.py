@@ -645,7 +645,7 @@ def main():
                     datamc_vars.extend(hadSV_vars + lepSV_vars)
             elif region_type == 'pho':
                 # mc_only variables (Gen-level) excluded — not present in data files
-                photon_vars = [
+                photon_vars = ['nBaseLinePhotons'] + [
                     v for v, c in AnalysisConfig.VARIABLES.items()
                     if v.startswith('baseLinePhoton_') and not c.get('mc_only', False)
                 ]

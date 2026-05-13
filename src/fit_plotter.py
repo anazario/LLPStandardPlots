@@ -5,6 +5,7 @@ import ROOT
 import re
 from collections import namedtuple
 from src.style import StyleManager
+from src.plotter import PlotterDataMC
 
 # ── Bin label tables ──────────────────────────────────────────────────────────
 
@@ -168,6 +169,17 @@ def _uid():
     return _canvas_counter[0]
 
 
+def _datamc_background_key(process_name: str) -> str:
+    """Map Combine/SampleTool process names onto labels known by PlotterDataMC."""
+    label_map = {
+        "Wjets": "WJets",
+        "Zjets": "ZJets",
+        "Gjets": "GJets",
+        "Top": "TTJets",
+    }
+    return label_map.get(process_name, process_name)
+
+
 def _compressed_display_key(bin_name: str) -> str:
     if bin_name.startswith("Val_"):
         return bin_name[len("Val_"):]
@@ -246,6 +258,7 @@ class FitPlotter:
     def __init__(self, luminosity=136, energy=13):
         self.style = StyleManager(luminosity=luminosity, energy=energy)
         self.style.set_style()
+        self.datamc_plotter = PlotterDataMC(self.style)
         self.luminosity = luminosity
         self.energy = energy
 
@@ -253,7 +266,7 @@ class FitPlotter:
 
     def plot_all(self, fit_result_path, fit_config_path, output_prefix="fit",
                  output_format="pdf", mode_override=None, label_scheme="auto",
-                 show_sr=False):
+                 show_sr=False, data_mc=False):
         cfg = self._load_config(fit_config_path, mode_override)
         f   = uproot.open(fit_result_path)
 
@@ -272,11 +285,17 @@ class FitPlotter:
 
         pre_shape  = self._extract_yields(f, "shapes_prefit", shape_all_bins)
         post_shape = self._extract_yields(f, "shapes_fit_b",  shape_all_bins)
+        if data_mc:
+            pre_shape_stack = self._extract_stack_hists(f, "shapes_prefit", shape_all_bins, "shape_prefit")
+            post_shape_stack = self._extract_stack_hists(f, "shapes_fit_b", shape_all_bins, "shape_postfit")
 
         if cfg.abcd_bin_order:
             abcd_all_bins = [b for _, bins in cfg.abcd_bin_order for b in bins]
             pre_abcd  = self._extract_yields(f, "shapes_prefit", abcd_all_bins)
             post_abcd = self._extract_yields(f, "shapes_fit_b",  abcd_all_bins)
+            if data_mc:
+                pre_abcd_stack = self._extract_stack_hists(f, "shapes_prefit", abcd_all_bins, "abcd_prefit")
+                post_abcd_stack = self._extract_stack_hists(f, "shapes_fit_b", abcd_all_bins, "abcd_postfit")
 
         # Collect (canvas_pre, canvas_post, short_name) for all plots, then
         # flush to a single ROOT file or individual image files at the end.
@@ -290,8 +309,8 @@ class FitPlotter:
         else:
             shape_deco = self._build_decorations(cfg.shape_bin_order, bin_scheme)
         plots.append((
-            self._draw_standard_canvas(*pre_shape,  shape_deco, f"shp_pre_{_uid()}",  "Prefit"),
-            self._draw_standard_canvas(*post_shape, shape_deco, f"shp_pst_{_uid()}", "Postfit"),
+            self._draw_datamc_canvas(pre_shape_stack, shape_deco, f"shp_pre_{_uid()}", "Prefit") if data_mc else self._draw_standard_canvas(*pre_shape,  shape_deco, f"shp_pre_{_uid()}",  "Prefit"),
+            self._draw_datamc_canvas(post_shape_stack, shape_deco, f"shp_pst_{_uid()}", "Postfit") if data_mc else self._draw_standard_canvas(*post_shape, shape_deco, f"shp_pst_{_uid()}", "Postfit"),
             "shape",
         ))
 
@@ -308,6 +327,11 @@ class FitPlotter:
                 a_post = tuple(arr[ai:ai+na] for arr in post_shape)
                 b_pre  = tuple(arr[bi:bi+nb] for arr in pre_shape)
                 b_post = tuple(arr[bi:bi+nb] for arr in post_shape)
+                if data_mc:
+                    a_pre_stack = self._slice_hist_bundle(pre_shape_stack, ai, na, f"a_pre_{_uid()}")
+                    a_post_stack = self._slice_hist_bundle(post_shape_stack, ai, na, f"a_post_{_uid()}")
+                    b_pre_stack = self._slice_hist_bundle(pre_shape_stack, bi, nb, f"b_pre_{_uid()}")
+                    b_post_stack = self._slice_hist_bundle(post_shape_stack, bi, nb, f"b_post_{_uid()}")
 
                 tag       = f"{self._ch_short(anchor_ch)}_{self._ch_short(buoy_ch)}"
                 pair_ord  = [(anchor_ch, anchor_bins), (buoy_ch, buoy_bins)]
@@ -319,12 +343,18 @@ class FitPlotter:
                     pair_deco = self._build_decorations(pair_ord, bin_scheme)
                 tog_pre   = tuple(np.concatenate([a, b]) for a, b in zip(a_pre,  b_pre))
                 tog_post  = tuple(np.concatenate([a, b]) for a, b in zip(a_post, b_post))
+                if data_mc:
+                    tog_pre_stack = self._concat_hist_bundles(a_pre_stack, b_pre_stack, f"tog_pre_{_uid()}")
+                    tog_post_stack = self._concat_hist_bundles(a_post_stack, b_post_stack, f"tog_post_{_uid()}")
 
                 plots.append((
-                    self._draw_standard_canvas(*tog_pre,  pair_deco, f"tog_pre_{_uid()}",  "Prefit"),
-                    self._draw_standard_canvas(*tog_post, pair_deco, f"tog_pst_{_uid()}", "Postfit"),
+                    self._draw_datamc_canvas(tog_pre_stack, pair_deco, f"tog_pre_{_uid()}", "Prefit") if data_mc else self._draw_standard_canvas(*tog_pre,  pair_deco, f"tog_pre_{_uid()}",  "Prefit"),
+                    self._draw_datamc_canvas(tog_post_stack, pair_deco, f"tog_pst_{_uid()}", "Postfit") if data_mc else self._draw_standard_canvas(*tog_post, pair_deco, f"tog_pst_{_uid()}", "Postfit"),
                     f"pair_{tag}_together",
                 ))
+
+                if data_mc:
+                    continue
 
                 if use_cf_labels:
                     a_deco = self._build_compressed_final_decorations([(anchor_ch, anchor_bins)])
@@ -354,12 +384,12 @@ class FitPlotter:
             else:
                 abcd_flat_deco = self._build_decorations(cfg.abcd_bin_order, abcd_scheme)
             plots.append((
-                self._draw_standard_canvas(*pre_abcd,  abcd_flat_deco, f"abf_pre_{_uid()}",  "Prefit"),
-                self._draw_standard_canvas(*post_abcd, abcd_flat_deco, f"abf_pst_{_uid()}", "Postfit"),
+                self._draw_datamc_canvas(pre_abcd_stack, abcd_flat_deco, f"abf_pre_{_uid()}", "Prefit") if data_mc else self._draw_standard_canvas(*pre_abcd,  abcd_flat_deco, f"abf_pre_{_uid()}",  "Prefit"),
+                self._draw_datamc_canvas(post_abcd_stack, abcd_flat_deco, f"abf_pst_{_uid()}", "Postfit") if data_mc else self._draw_standard_canvas(*post_abcd, abcd_flat_deco, f"abf_pst_{_uid()}", "Postfit"),
                 "abcd_flat",
             ))
 
-            sr_ch = (next(iter(cfg.abcd_pairs)) if cfg.abcd_pairs else None) if show_sr else None
+            sr_ch = show_sr  # True → color any channel whose name contains "SR"
             if use_cf_labels:
                 abcd_grid_deco = self._build_compressed_final_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
             elif use_ncf_labels:
@@ -367,8 +397,8 @@ class FitPlotter:
             else:
                 abcd_grid_deco = self._build_abcd_grid_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
             plots.append((
-                self._draw_standard_canvas(*pre_abcd,  abcd_grid_deco, f"abg_pre_{_uid()}",  "Prefit"),
-                self._draw_standard_canvas(*post_abcd, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit"),
+                self._draw_datamc_canvas(pre_abcd_stack, abcd_grid_deco, f"abg_pre_{_uid()}", "Prefit") if data_mc else self._draw_standard_canvas(*pre_abcd,  abcd_grid_deco, f"abg_pre_{_uid()}",  "Prefit"),
+                self._draw_datamc_canvas(post_abcd_stack, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit") if data_mc else self._draw_standard_canvas(*post_abcd, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit"),
                 "abcd_grid",
             ))
 
@@ -379,9 +409,12 @@ class FitPlotter:
             )
             comb_pre   = tuple(np.concatenate([a, s]) for a, s in zip(pre_abcd,  pre_shape))
             comb_post  = tuple(np.concatenate([a, s]) for a, s in zip(post_abcd, post_shape))
+            if data_mc:
+                comb_pre_stack = self._concat_hist_bundles(pre_abcd_stack, pre_shape_stack, f"cmb_pre_{_uid()}")
+                comb_post_stack = self._concat_hist_bundles(post_abcd_stack, post_shape_stack, f"cmb_post_{_uid()}")
             plots.append((
-                self._draw_standard_canvas(*comb_pre,  comb_deco, f"cmb_pre_{_uid()}",  "Prefit",  right_panel=True),
-                self._draw_standard_canvas(*comb_post, comb_deco, f"cmb_pst_{_uid()}", "Postfit", right_panel=True),
+                self._draw_datamc_canvas(comb_pre_stack, comb_deco, f"cmb_pre_{_uid()}", "Prefit", right_panel=True) if data_mc else self._draw_standard_canvas(*comb_pre,  comb_deco, f"cmb_pre_{_uid()}",  "Prefit",  right_panel=True),
+                self._draw_datamc_canvas(comb_post_stack, comb_deco, f"cmb_pst_{_uid()}", "Postfit", right_panel=True) if data_mc else self._draw_standard_canvas(*comb_post, comb_deco, f"cmb_pst_{_uid()}", "Postfit", right_panel=True),
                 "combined",
             ))
 
@@ -441,9 +474,31 @@ class FitPlotter:
 
     # ── Yield extraction ──────────────────────────────────────────────────────
 
+    def _resolve_bin_names(self, uf, folder, bin_list):
+        """Map config bin names to actual names in the ROOT file.
+
+        Combine/Higgs tools prefix bin directories with the signal point name
+        (e.g. gogoGZ_2300_2200_2100_10_SVonly_AnchorCR00).  This method finds
+        the matching key regardless of whether a prefix is present.
+        """
+        available = {k.split(";")[0] for k in uf[folder].keys()}
+        resolved = []
+        for bn in bin_list:
+            if bn in available:
+                resolved.append(bn)
+            else:
+                match = next((k for k in available if k.endswith(f"_{bn}")), None)
+                if match is None:
+                    raise uproot.exceptions.KeyInFileError(
+                        f"Cannot find bin '{bn}' in folder '{folder}'"
+                    )
+                resolved.append(match)
+        return resolved
+
     def _extract_yields(self, uf, folder, bin_list):
         bkg, berr, dy, eyl, eyh = [], [], [], [], []
-        for bn in bin_list:
+        resolved = self._resolve_bin_names(uf, folder, bin_list)
+        for bn in resolved:
             h = uf[f"{folder}/{bn}/total_background"]
             g = uf[f"{folder}/{bn}/data"]
             bkg.append(float(h.values()[0]))
@@ -453,6 +508,108 @@ class FitPlotter:
             eyh.append(float(g.member("fEYhigh")[0]))
         return (np.array(bkg), np.array(berr),
                 np.array(dy),  np.array(eyl), np.array(eyh))
+
+    def _shape_processes(self, uf, folder, resolved_bins):
+        skip = {"data", "total", "total_background", "total_signal", "total_covar", "overall_total_covar"}
+        processes = []
+        seen = set()
+        for bn in resolved_bins:
+            for key in uf[f"{folder}/{bn}"].keys():
+                proc = key.split(";")[0]
+                if proc in skip or proc in seen:
+                    continue
+                seen.add(proc)
+                processes.append(proc)
+        preferred = ["QCD", "Wjets", "WJets", "Zjets", "ZJets", "Top", "TTJets", "TTXJets", "Gjets", "GJets"]
+        rank = {name: i for i, name in enumerate(preferred)}
+        return sorted(processes, key=lambda p: (rank.get(p, len(rank)), p))
+
+    def _extract_stack_hists(self, uf, folder, bin_list, name):
+        resolved = self._resolve_bin_names(uf, folder, bin_list)
+        nbins = len(bin_list)
+        data_hist = ROOT.TH1F(f"h_data_{name}_{_uid()}", "data", nbins, 0, nbins)
+        data_hist.SetDirectory(0)
+        data_hist.Sumw2()
+
+        for i, bn in enumerate(resolved, start=1):
+            g = uf[f"{folder}/{bn}/data"]
+            data_hist.SetBinContent(i, float(g.member("fY")[0]))
+            data_hist.SetBinError(i, max(float(g.member("fEYlow")[0]), float(g.member("fEYhigh")[0])))
+
+        mc_histograms = []
+        for proc in self._shape_processes(uf, folder, resolved):
+            hist = ROOT.TH1F(f"h_{proc}_{name}_{_uid()}", proc, nbins, 0, nbins)
+            hist.SetDirectory(0)
+            hist.Sumw2()
+            has_yield = False
+            for i, bn in enumerate(resolved, start=1):
+                path = f"{folder}/{bn}/{proc}"
+                if path not in uf:
+                    continue
+                h = uf[path]
+                value = float(h.values()[0])
+                error = float(h.errors()[0])
+                hist.SetBinContent(i, value)
+                hist.SetBinError(i, error)
+                has_yield = has_yield or value != 0
+            if has_yield:
+                mc_histograms.append((hist, proc))
+
+        if not mc_histograms:
+            raise RuntimeError(f"No per-process MC shapes found in '{folder}'")
+
+        return {"data": data_hist, "mc": mc_histograms}
+
+    def _slice_hist(self, hist, start, length, name):
+        out = ROOT.TH1F(name, hist.GetTitle(), length, 0, length)
+        out.SetDirectory(0)
+        out.Sumw2()
+        for i in range(length):
+            out.SetBinContent(i + 1, hist.GetBinContent(start + i + 1))
+            out.SetBinError(i + 1, hist.GetBinError(start + i + 1))
+        return out
+
+    def _slice_hist_bundle(self, bundle, start, length, name):
+        return {
+            "data": self._slice_hist(bundle["data"], start, length, f"h_data_{name}"),
+            "mc": [(self._slice_hist(h, start, length, f"h_{label}_{name}"), label) for h, label in bundle["mc"]],
+        }
+
+    def _concat_hist_bundles(self, first, second, name):
+        def concat_hist(h1, h2, hname):
+            n1 = h1.GetNbinsX()
+            n2 = h2.GetNbinsX()
+            out = ROOT.TH1F(hname, h1.GetTitle(), n1 + n2, 0, n1 + n2)
+            out.SetDirectory(0)
+            out.Sumw2()
+            for i in range(1, n1 + 1):
+                out.SetBinContent(i, h1.GetBinContent(i))
+                out.SetBinError(i, h1.GetBinError(i))
+            for i in range(1, n2 + 1):
+                out.SetBinContent(n1 + i, h2.GetBinContent(i))
+                out.SetBinError(n1 + i, h2.GetBinError(i))
+            return out
+
+        second_by_label = {label: h for h, label in second["mc"]}
+        mc = []
+        for h1, label in first["mc"]:
+            if label in second_by_label:
+                mc.append((concat_hist(h1, second_by_label[label], f"h_{label}_{name}"), label))
+            else:
+                zero = ROOT.TH1F(f"h_zero_second_{label}_{name}", label, second["data"].GetNbinsX(), 0, second["data"].GetNbinsX())
+                zero.SetDirectory(0)
+                zero.Sumw2()
+                mc.append((concat_hist(h1, zero, f"h_{label}_{name}"), label))
+        for h2, label in second["mc"]:
+            if not any(label == existing for _, existing in mc):
+                zero = ROOT.TH1F(f"h_zero_{label}_{name}", label, first["data"].GetNbinsX(), 0, first["data"].GetNbinsX())
+                zero.SetDirectory(0)
+                zero.Sumw2()
+                mc.append((concat_hist(zero, h2, f"h_{label}_{name}"), label))
+        return {
+            "data": concat_hist(first["data"], second["data"], f"h_data_{name}"),
+            "mc": mc,
+        }
 
     # ── Decoration builders ───────────────────────────────────────────────────
 
@@ -622,7 +779,7 @@ class FitPlotter:
                 bin_labels.append(
                     COMPRESSED_FINAL_RISR_LABELS.get(family, {}).get(suf, RISR_COMPACT_LABELS.get(suf, suf))
                 )
-                if ch == sr_ch:
+                if sr_ch and "SR" in bin_name:
                     sr_bins.append(cursor)
                 cursor += 1
                 if cursor > 1:
@@ -805,7 +962,7 @@ class FitPlotter:
                     current_subgroup = subgroup
 
                 bin_labels.append(parsed["display_label"])
-                if ch == sr_ch:
+                if sr_ch and "SR" in bin_name:
                     sr_bins.append(cursor)
                 cursor += 1
                 if cursor > 1:
@@ -867,7 +1024,7 @@ class FitPlotter:
                 timing   = "Early" if "Early" in ch else "Late"
                 for bin_name in bins:
                     bin_labels.append(MS_DELAYED_LABELS.get(bin_name[-2:], bin_name[-2:]))
-                    if ch == sr_ch:
+                    if sr_ch and "SR" in bin_name:
                         sr_bins.append(cursor)
                     cursor += 1
                 sub_group_labels.append({"text": timing, "start": ch_start, "end": cursor})
@@ -923,8 +1080,8 @@ class FitPlotter:
 
         sr_bins = []
         if sr_ch:
-            for gl, (ch, _) in zip(abcd_deco["group_labels"], abcd_bin_order):
-                if ch == sr_ch:
+            for gl, (ch, bins) in zip(abcd_deco["group_labels"], abcd_bin_order):
+                if any("SR" in b for b in bins):
                     sr_bins.extend(range(gl["start"], gl["end"]))
 
         if shape_bin_scheme == "risr":
@@ -965,6 +1122,242 @@ class FitPlotter:
         }
 
     # ── Canvas drawing: standard ──────────────────────────────────────────────
+
+    def _draw_datamc_canvas(self, hist_bundle, deco, name, title, right_panel=False):
+        n      = deco["n_bins"]
+        bot_m  = deco.get("bottom_margin", 0.38)
+        left_m = 0.10
+        right_m = 0.16 if right_panel else 0.04
+        split   = 0.30
+        has_sub  = bool(deco.get("sub_group_labels"))
+        has_sect = bool(deco.get("section_labels"))
+
+        cw = max(1200, min(80 * n, 2400))
+        self.datamc_plotter._ensure_mc_colors()
+        canvas = ROOT.TCanvas(f"c_{name}", title, cw, 700)
+        canvas.SetFillColor(0)
+
+        pad1 = ROOT.TPad(f"p1_{name}", "main",  0, split, 1, 1)
+        pad1.SetBottomMargin(0.02)
+        pad1.SetTopMargin(0.17 if has_sect else 0.13)
+        pad1.SetLeftMargin(left_m); pad1.SetRightMargin(right_m)
+        pad1.SetTicks(1, 1)
+        pad1.SetLogy(True); pad1.SetGridx(True); pad1.Draw()
+
+        pad2 = ROOT.TPad(f"p2_{name}", "ratio", 0, 0, 1, split)
+        pad2.SetTopMargin(0.02); pad2.SetBottomMargin(bot_m)
+        pad2.SetLeftMargin(left_m); pad2.SetRightMargin(right_m)
+        pad2.SetTicks(1, 1)
+        pad2.SetGridx(True); pad2.SetGridy(True); pad2.Draw()
+
+        pad1.cd()
+        data_hist = hist_bundle["data"].Clone(f"h_data_{name}")
+        data_hist.SetDirectory(0)
+        data_hist.SetMarkerStyle(20)
+        data_hist.SetMarkerSize(1.2)
+        data_hist.SetMarkerColor(ROOT.kBlack)
+        data_hist.SetLineColor(ROOT.kBlack)
+        data_hist.SetLineWidth(2)
+        data_hist.SetStats(0)
+
+        mc_histograms = []
+        for hist, label in hist_bundle["mc"]:
+            h = hist.Clone(f"{hist.GetName()}_{name}")
+            h.SetDirectory(0)
+            datamc_label = _datamc_background_key(label)
+            h.SetFillColor(self.datamc_plotter._get_background_color_index(datamc_label))
+            h.SetLineColor(ROOT.kBlack)
+            h.SetLineWidth(1)
+            h.SetStats(0)
+            mc_histograms.append((h, self.datamc_plotter._clean_mc_label(datamc_label)))
+        mc_histograms.sort(key=lambda item: item[0].Integral())
+
+        total_mc_hist = data_hist.Clone(f"total_mc_{name}")
+        total_mc_hist.Reset()
+        for h, _ in mc_histograms:
+            total_mc_hist.Add(h)
+
+        h_ratio = ROOT.TH1F(f"hr_{name}", "", n, 0, n)
+        h_ratio.SetDirectory(0)
+        h_rband = ROOT.TH1F(f"hrb_{name}", "", n, 0, n)
+        h_rband.SetDirectory(0)
+        for i in range(n):
+            data = data_hist.GetBinContent(i + 1)
+            data_err = data_hist.GetBinError(i + 1)
+            bkg = total_mc_hist.GetBinContent(i + 1)
+            bkg_err = total_mc_hist.GetBinError(i + 1)
+            h_ratio.SetBinContent(i + 1, data / bkg if bkg > 0 else 0)
+            h_ratio.SetBinError(i + 1, data_err / bkg if bkg > 0 else 0)
+            h_rband.SetBinContent(i + 1, 1.0)
+            h_rband.SetBinError(i + 1, bkg_err / bkg if bkg > 0 else 0)
+        h_rband.SetFillColor(ROOT.kGray + 1)
+        h_rband.SetFillStyle(3345)
+        h_rband.SetMarkerSize(0)
+        h_rband.SetLineColor(0)
+
+        stack = ROOT.THStack(f"stack_{name}", "")
+        for h, _ in mc_histograms:
+            stack.Add(h)
+
+        stack.Draw("HIST")
+        pos_vals = []
+        for i in range(n):
+            bkg = total_mc_hist.GetBinContent(i + 1)
+            bkg_err = total_mc_hist.GetBinError(i + 1)
+            data = data_hist.GetBinContent(i + 1)
+            data_err = data_hist.GetBinError(i + 1)
+            if bkg > 0:
+                pos_vals.append(bkg)
+            if data > 0:
+                pos_vals.append(data)
+        pos_vals = np.array(pos_vals)
+        min_v = max(0.5, 0.3 * pos_vals.min()) if pos_vals.size else 0.5
+        max_v = max(
+            max((total_mc_hist.GetBinContent(i + 1) + total_mc_hist.GetBinError(i + 1)) for i in range(n)),
+            max((data_hist.GetBinContent(i + 1) + data_hist.GetBinError(i + 1)) for i in range(n)),
+            1.0,
+        )
+        stack.SetMinimum(min_v)
+        stack.SetMaximum(max_v * 10.0)
+        stack.GetHistogram().GetYaxis().SetRangeUser(min_v, max_v * 10.0)
+        stack.GetXaxis().SetLabelSize(0)
+        stack.GetXaxis().SetTickLength(0.015)
+        stack.GetXaxis().SetNdivisions(n, 0, 0, False)
+        stack.GetYaxis().SetTitle("Events / bin")
+        stack.GetYaxis().SetTitleSize(0.075)
+        stack.GetYaxis().SetTitleOffset(0.65)
+        stack.GetYaxis().SetLabelSize(0.065)
+        stack.GetYaxis().SetTickLength(0.015)
+        stack.GetYaxis().CenterTitle(True)
+
+        mc_uncertainty = self.datamc_plotter._create_mc_uncertainty_band(mc_histograms)
+        if mc_uncertainty:
+            mc_uncertainty.Draw("E2 SAME")
+        data_hist.Draw("PEX0 SAME")
+
+        rp = 1.0 - right_m
+        if right_panel:
+            legend = self.datamc_plotter._create_standard_legend(
+                data_hist, mc_uncertainty, mc_histograms,
+                x1=rp + 0.01, x2=0.995, y1=0.62, y2=0.88, text_size=0.038
+            )
+        else:
+            legend = self.datamc_plotter._create_standard_legend(
+                data_hist, mc_uncertainty, mc_histograms,
+                x1=0.77, x2=1.0, y1=0.36, y2=0.76, text_size=0.045
+            )
+        legend.Draw()
+
+        rp_objs = []
+        if right_panel:
+            defs = deco.get("glossary", [])
+            if defs:
+                lt_key = ROOT.TLatex()
+                lt_key.SetNDC(True)
+                lt_key.SetTextFont(42)
+                lt_key.SetTextSize(deco.get("glossary_text_size", 0.034 if len(defs) > 10 else 0.052))
+                lt_key.SetTextAlign(12)
+                y_key = deco.get("datamc_glossary_y0", 0.58 if len(defs) > 4 else 0.52)
+                dy = deco.get(
+                    "datamc_glossary_line_spacing",
+                    0.035 if len(defs) > 4 else deco.get("glossary_line_spacing", 0.075),
+                )
+                for sym, rng in defs:
+                    if isinstance(rng, tuple):
+                        lt_key.DrawLatex(rp + 0.01, y_key, f"{sym}  :")
+                        for line in rng:
+                            y_key -= dy
+                            lt_key.DrawLatex(rp + 0.022, y_key, line)
+                        y_key -= dy
+                    else:
+                        lt_key.DrawLatex(rp + 0.01, y_key, f"{sym}  :  {rng}")
+                        y_key -= dy
+                rp_objs.append(lt_key)
+
+        if right_panel:
+            self.style.draw_cms_labels(
+                cms_x=0.10, cms_y=0.89, prelim_str="Preliminary",
+                prelim_x=0.175, lumi_x=0.84, cms_text_size_mult=1.92
+            )
+        else:
+            self.style.draw_cms_labels(
+                cms_x=0.10, cms_y=0.89, prelim_str="Preliminary",
+                prelim_x=0.185, lumi_x=0.96, cms_text_size_mult=1.92
+            )
+
+        sect_objs = []
+        if has_sect:
+            dw  = 1.0 - left_m - right_m
+            slt = ROOT.TLatex()
+            slt.SetNDC(True)
+            slt.SetTextFont(62)
+            slt.SetTextSize(0.065)
+            slt.SetTextAlign(22)
+            for sl in deco["section_labels"]:
+                cx    = (sl["start"] + sl["end"]) / 2.0
+                x_ndc = left_m + (cx / n) * dw
+                slt.DrawLatex(x_ndc, 0.88, sl["text"])
+            sect_objs.append(slt)
+
+        grp_y    = 0.72 if has_sect else 0.77
+        grp_objs = self._draw_group_labels(pad1, deco, left_m, right_m, grp_y)
+
+        pad2.cd()
+        h_ratio.SetMaximum(1.99)
+        h_ratio.SetMinimum(0.0)
+        h_ratio.GetYaxis().SetTitle("")
+        h_ratio.GetYaxis().SetLabelSize(0.15)
+        h_ratio.GetYaxis().SetNdivisions(504)
+        h_ratio.GetYaxis().SetTickLength(0.015)
+        h_ratio.GetXaxis().SetLabelSize(0)
+        h_ratio.GetXaxis().SetTickLength(0.015)
+        h_ratio.GetXaxis().SetNdivisions(n, 0, 0, False)
+        h_ratio.SetMarkerStyle(20)
+        h_ratio.SetMarkerSize(1.0)
+        h_ratio.SetLineColor(ROOT.kBlack)
+        h_ratio.SetStats(0)
+        h_ratio.Draw("PE")
+        h_rband.Draw("E2 SAME")
+        h_ratio.Draw("PE SAME")
+
+        unity = ROOT.TLine(0, 1, n, 1)
+        unity.SetLineColor(ROOT.kRed)
+        unity.SetLineWidth(2)
+        unity.SetLineStyle(2)
+        unity.Draw()
+
+        rtitle = ROOT.TLatex()
+        rtitle.SetNDC(True)
+        rtitle.SetTextFont(42)
+        rtitle.SetTextSize(0.16)
+        rtitle.SetTextAlign(22)
+        rtitle.SetTextAngle(90)
+        rtitle.DrawLatex(0.025, 0.65, "Data / MC")
+
+        sg_objs = self._draw_sub_group_labels(pad2, deco, left_m, right_m) if has_sub else []
+        abcd_y_off = 0.07 if deco.get("section_separator") is not None else 0.0
+        bl_objs = self._draw_bin_labels(pad2, deco, left_m, right_m, has_sub, abcd_y_off)
+        sep_objs = self._draw_separators(canvas, deco, left_m, right_m, name)
+
+        canvas.Modified()
+        canvas.Update()
+        canvas.pad1 = pad1
+        canvas.pad2 = pad2
+        canvas.stack = stack
+        canvas.data_hist = data_hist
+        canvas.mc_histograms = mc_histograms
+        canvas.mc_uncertainty = mc_uncertainty
+        canvas.legend = legend
+        canvas.ratio_hist = h_ratio
+        canvas.total_mc_hist = total_mc_hist
+        canvas.mc_ratio_uncertainty = h_rband
+        canvas.line = unity
+        canvas._keep = [
+            pad1, pad2, stack, data_hist, mc_histograms, total_mc_hist,
+            mc_uncertainty, legend, h_ratio, h_rband, unity, rtitle,
+            grp_objs, sg_objs, bl_objs, sep_objs, sect_objs, rp_objs,
+        ]
+        return canvas
 
     def _draw_standard_canvas(self, bkg_vals, bkg_errs, data_y, data_eyl, data_eyh,
                                deco, name, title, right_panel=False):

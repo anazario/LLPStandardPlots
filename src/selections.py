@@ -179,7 +179,8 @@ class SelectionManager:
         ]
         self.flags = [
             "Flag_MetFilters",
-            "hlt_flags" 
+            "hlt_flags",
+            "Flag_hemVeto"
             # Add other boolean flags here if they are single branches
         ]
         # HLT fallback expression

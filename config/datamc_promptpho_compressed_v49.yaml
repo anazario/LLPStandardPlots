@@ -1,0 +1,48 @@
+base_dir: /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49
+
+lumi: 200.0
+energy: 13.6
+analysis_type: compressed
+isr_pt_cut: 300
+plots: [ratio]
+format: pdf
+output: datamc_promptpho_compressed_v49
+
+# CR-only prompt photon selection:
+# - nBaseLinePhotons >= 1
+# - all baseline photons satisfy |baseLinePhoton_WTimeSig| < 2.5
+# - all baseline photons satisfy baseLinePhoton_isoANNScore < 0.96
+flags:
+  - cut: "PROMPT_PHO_CR_COMPRESSED_GE1"
+    region_type: pho
+
+signal:
+  - SMS_SVHPM100_v34_gogoGZ_FULLMINI_mGl-2500_mN2-1200_mN1-500_ct0p1_rjrskim.root
+
+background:
+  - name: QCD multijets
+    files:
+      - background/QCD_R18.root
+  - name: W+jets
+    files:
+      - background/WJets_R18.root
+  - name: Z+jets
+    files:
+      - background/ZJets_R18.root
+  - name: t#bar{t}+jets
+    files:
+      - background/TTJets_R18.root
+  - name: "#gamma+jets"
+    files:
+      - background/GJets_R18.root
+
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - data/MET_R16.root
+      - data/MET_R17.root
+      - data/MET_R18.root
+      - data/JetMET_R22.root
+      - data/JetMET_R23.root
+      - data/JetMET_R24.root

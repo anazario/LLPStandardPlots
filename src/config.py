@@ -229,7 +229,7 @@ class AnalysisConfig:
             'name': 'photon_wtimesig',
             'label': 't_{#gamma}^{w}/#sigma_{t}',
             'bins': 60,
-            'range': (-5, 10),
+            'range': (-2.5, 2.5),
             'scale': 1.0,
             'is_vector': True,
             'mc_only': False

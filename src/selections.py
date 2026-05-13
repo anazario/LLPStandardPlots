@@ -179,9 +179,11 @@ class SelectionManager:
         ]
         self.flags = [
             "Flag_MetFilters",
-            "hlt_flags",
-            "Flag_hemVeto"
+            "hlt_flags"
             # Add other boolean flags here if they are single branches
+        ]
+        self.inverted_flags = [
+            "Flag_hemVeto"
         ]
         # HLT fallback expression
         self.hlt_fallback_expression = "(Trigger_PFMET120_PFMHT120_IDTight || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight || Trigger_PFMET120_PFMHT120_IDTight_PFHT60 || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60)"
@@ -193,6 +195,8 @@ class SelectionManager:
         # Add boolean flags (assumed to be == 1)
         for flag in self.flags:
             cuts.append(f"({flag} == 1)")
+        for flag in self.inverted_flags:
+            cuts.append(f"({flag} == 0)")
             
         if final_state_flag:
             cuts.append(f"({final_state_flag} == 1)")

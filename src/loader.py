@@ -100,6 +100,7 @@ class DataLoader:
         # Show baseline cuts (mode-aware)
         baseline_cuts = ["selCMet > 150", "evtFillWgt < 10"]
         baseline_cuts.extend([f"({flag} == 1)" for flag in self.selection_manager.flags])
+        baseline_cuts.extend([f"({flag} == 0)" for flag in self.selection_manager.inverted_flags])
 
         # Add mode-specific cuts
         if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
@@ -136,6 +137,7 @@ class DataLoader:
         # Add flag branches
         branches.extend(final_state_flags)
         branches.extend(self.selection_manager.flags)
+        branches.extend(self.selection_manager.inverted_flags)
         
         all_data = {flag: {} for flag in final_state_flags}
         
@@ -170,6 +172,9 @@ class DataLoader:
                             except Exception:
                                 print(f"  Warning: High-Level Trigger (HLT) not found")
                         # No warning for other missing flags to keep output clean
+                    for flag in self.selection_manager.inverted_flags:
+                        if flag in data:
+                            base_mask &= (data[flag] == 0)
                     
                     for fs_flag in final_state_flags:
                         if fs_flag not in data:
@@ -254,6 +259,7 @@ class DataLoader:
             for or_part in flag.split('|'):
                 branches.extend(f.strip() for f in or_part.split('+'))
         branches.extend(self.selection_manager.flags)
+        branches.extend(self.selection_manager.inverted_flags)
 
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
@@ -501,6 +507,22 @@ class DataLoader:
                             print(f"  Warning: named cut '{custom_cut}' cannot pass; missing branch(es): {sorted(missing_named)}")
                 cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
                             f" (evtFillWgt < {AnalysisConfig.EVT_WGT_CUT})")
+                baseline_flag_cuts = []
+                missing_baseline_flags = []
+                for flag in self.selection_manager.flags:
+                    if flag in available_branches:
+                        baseline_flag_cuts.append(f"({flag} == 1)")
+                    else:
+                        missing_baseline_flags.append(flag)
+                for flag in self.selection_manager.inverted_flags:
+                    if flag in available_branches:
+                        baseline_flag_cuts.append(f"({flag} == 0)")
+                    else:
+                        missing_baseline_flags.append(flag)
+                if baseline_flag_cuts:
+                    cut_expr += " & " + " & ".join(baseline_flag_cuts)
+                if self.verbose and missing_baseline_flags:
+                    print(f"  Note: baseline flag branch(es) absent from tree: {missing_baseline_flags}")
 
                 scalar_prefilter = self._build_scalar_prefilter(
                     custom_cuts, available_branches, tree)
@@ -545,6 +567,9 @@ class DataLoader:
                     for flag in self.selection_manager.flags:
                         if flag in chunk:
                             base_mask &= (chunk[flag] == 1)
+                    for flag in self.selection_manager.inverted_flags:
+                        if flag in chunk:
+                            base_mask &= (chunk[flag] == 0)
                     total_base += int(np.sum(base_mask))
 
                     # Process event flags ('|' = OR, '+' = AND)

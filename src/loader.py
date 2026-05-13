@@ -320,15 +320,34 @@ class DataLoader:
             return self._prompt_photon_cr_uncompressed_ge1(chunk, n_events)
         return None
 
+    def _missing_named_cut_branches(self, cut_name, available_branches):
+        if cut_name == self._PROMPT_PHO_CR_COMPRESSED_GE1:
+            required = {
+                'nBaseLinePhotons',
+                'baseLinePhoton_WTimeSig',
+                'baseLinePhoton_isoANNScore',
+            }
+        elif cut_name == self._PROMPT_PHO_CR_UNCOMPRESSED_GE1:
+            required = {
+                'nBaseLinePhotons',
+                'baseLinePhoton_WTimeSig',
+                'baseLinePhoton_isoANNScore',
+                'baseLinePhoton_Pt',
+                'baseLinePhoton_Eta',
+            }
+        else:
+            return set()
+        return required - set(available_branches)
+
     @staticmethod
-    def _event_photon_arrays(chunk, idx):
+    def _event_photon_arrays(chunk, idx, require_pt_eta=True):
         required = [
             'nBaseLinePhotons',
             'baseLinePhoton_WTimeSig',
             'baseLinePhoton_isoANNScore',
-            'baseLinePhoton_Pt',
-            'baseLinePhoton_Eta',
         ]
+        if require_pt_eta:
+            required.extend(['baseLinePhoton_Pt', 'baseLinePhoton_Eta'])
         if any(name not in chunk for name in required):
             return None
 
@@ -338,6 +357,11 @@ class DataLoader:
 
         times = np.asarray(chunk['baseLinePhoton_WTimeSig'][idx], dtype=float)
         iso = np.asarray(chunk['baseLinePhoton_isoANNScore'][idx], dtype=float)
+        if not require_pt_eta:
+            if min(len(times), len(iso)) < n_pho:
+                return None
+            return n_pho, times[:n_pho], iso[:n_pho], None, None
+
         pts = np.asarray(chunk['baseLinePhoton_Pt'][idx], dtype=float)
         etas = np.asarray(chunk['baseLinePhoton_Eta'][idx], dtype=float)
         if min(len(times), len(iso), len(pts), len(etas)) < n_pho:
@@ -349,7 +373,7 @@ class DataLoader:
         """Compressed prompt-photon CR: prompt timing and no tight ANN photons."""
         mask = np.zeros(n_events, dtype=bool)
         for idx in range(n_events):
-            values = self._event_photon_arrays(chunk, idx)
+            values = self._event_photon_arrays(chunk, idx, require_pt_eta=False)
             if values is None:
                 continue
             _, times, iso, _, _ = values
@@ -470,6 +494,11 @@ class DataLoader:
                 if _pho_missing and custom_cuts and self.verbose:
                     print(f"  Note: photon branch(es) absent from tree: {sorted(_pho_missing)}")
                     print(f"  Available photon-like keys: {sorted(k for k in tree_keys if 'oto' in k or 'Pho' in k)[:10]}")
+                if self.verbose:
+                    for custom_cut in custom_cuts:
+                        missing_named = self._missing_named_cut_branches(custom_cut, available_branches)
+                        if missing_named:
+                            print(f"  Warning: named cut '{custom_cut}' cannot pass; missing branch(es): {sorted(missing_named)}")
                 cut_expr = (f"(selCMet > {AnalysisConfig.MET_CUT}) &"
                             f" (evtFillWgt < {AnalysisConfig.EVT_WGT_CUT})")
 

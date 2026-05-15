@@ -134,6 +134,54 @@ class AnalysisConfig:
             'scale': 1.0,
             'is_vector': True
         },
+        'InclusiveSV_mass': {
+            'name': 'sv_mass',
+            'label': 'mass [GeV]',
+            'bins': 25,
+            'range': (0, 100),
+            'scale': 1.0,
+            'is_vector': True
+        },
+        'InclusiveSV_dxy': {
+            'name': 'sv_dxy',
+            'label': 'd_{xy} [cm]',
+            'bins': 25,
+            'range': (0, 50),
+            'scale': 1.0,
+            'is_vector': True
+        },
+        'InclusiveSV_dxySig': {
+            'name': 'sv_dxysig',
+            'label': 'd_{xy}/#sigma_{d_{xy}}',
+            'bins': 25,
+            'range': (0, 800),
+            'scale': 1.0,
+            'is_vector': True
+        },
+        'InclusiveSV_pOverE': {
+            'name': 'sv_povere',
+            'label': 'p/E',
+            'bins': 25,
+            'range': (0.6, 1),
+            'scale': 1.0,
+            'is_vector': True
+        },
+        'InclusiveSV_decayAngle': {
+            'name': 'sv_decayangle',
+            'label': 'cos#theta_{CM}^{*}',
+            'bins': 25,
+            'range': (-1, 1),
+            'scale': 1.0,
+            'is_vector': True
+        },
+        'InclusiveSV_cosTheta': {
+            'name': 'sv_costheta',
+            'label': 'cos#theta',
+            'bins': 25,
+            'range': (0, 1),
+            'scale': 1.0,
+            'is_vector': True
+        },
         'selCMet': {
             'name': 'met',
             'label': 'p_{T}^{miss} [GeV]',

@@ -497,8 +497,15 @@ class DataLoader:
         per_cut_filters = []
         for cut in custom_cuts:
             if self._is_named_custom_cut(cut):
-                continue
+                return None
             normalized = cut.replace('&&', ' & ').replace('||', ' | ')
+
+            # Keep this optimization conservative.  Parenthesized ORs that mix
+            # scalar and vector reducers cannot be flattened by regex without
+            # changing the selection, e.g. (A & all(x)) | (B & all(y)).
+            if '|' in normalized:
+                return None
+
             or_clauses = self._split_respecting_parens(normalized, ' | ')
 
             clause_filters = []
@@ -796,7 +803,7 @@ class DataLoader:
 
             # Extract all configured variables
             for var_key, var_config in AnalysisConfig.VARIABLES.items():
-                if var_key not in data:
+                if var_key not in data and not var_key.startswith('InclusiveSV_'):
                     continue
 
                 # Skip MC-only variables when processing data
@@ -829,6 +836,27 @@ class DataLoader:
 
                         extracted_data[var_key].append(scaled_val)
                         extracted_data[f'{var_key}_weights'].append(base_weight)
+
+                elif var_key.startswith('InclusiveSV_'):
+                    suffix = var_key.replace('InclusiveSV_', '', 1)
+                    source_keys = [
+                        ('HadronicSV', f'HadronicSV_{suffix}', 'SV_nHadronic'),
+                        ('LeptonicSV', f'LeptonicSV_{suffix}', 'SV_nLeptonic'),
+                    ]
+                    for collection, source_key, count_branch in source_keys:
+                        if source_key not in data:
+                            continue
+                        sv_array = data[source_key][idx]
+                        if count_branch in data and data[count_branch][idx] <= 0:
+                            continue
+                        selected_mask = self._selected_mask_for_event(
+                            selected_object_masks, collection, idx, len(sv_array))
+                        sv_values = (np.asarray(sv_array)[selected_mask]
+                                     if selected_mask is not None else sv_array)
+                        for sv_val in sv_values:
+                            scaled_val = sv_val * var_config['scale']
+                            extracted_data[var_key].append(scaled_val)
+                            extracted_data[f'{var_key}_weights'].append(base_weight)
 
                 elif var_key.startswith('HadronicSV_') or var_key.startswith('LeptonicSV_'):
                     sv_array = data[var_key][idx]

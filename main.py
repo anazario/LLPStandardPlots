@@ -557,7 +557,7 @@ def main():
         region_type = item.get('region_type')
 
         # Merge QCD and GJets into a single QCD entry for SV regions by default
-        if region_type == 'sv' and not args.no_merge_qcd_gjets:
+        if region_type in ('sv', 'inclusive-sv') and not args.no_merge_qcd_gjets:
             current_bg_data = _merge_qcd_gjets(current_bg_data, loader.combine_data)
 
         show_region_label = item['show_region_label']
@@ -653,6 +653,11 @@ def main():
                         datamc_vars.extend(hadSV_vars + lepSV_vars)
                 else:
                     datamc_vars.extend(hadSV_vars + lepSV_vars)
+            elif region_type == 'inclusive-sv':
+                datamc_vars.extend([
+                    'InclusiveSV_mass', 'InclusiveSV_dxy', 'InclusiveSV_dxySig',
+                    'InclusiveSV_pOverE', 'InclusiveSV_decayAngle', 'InclusiveSV_cosTheta'
+                ])
             elif region_type == 'pho':
                 # mc_only variables (Gen-level) excluded — not present in data files
                 photon_vars = ['nBaseLinePhotons'] + [

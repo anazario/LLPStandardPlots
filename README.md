@@ -77,6 +77,7 @@ energy: 13.6
 format: pdf
 output: my_plots
 analysis_type: uncompressed
+normalize: true
 
 signal:
   - /eos/.../SMS_*_ct0p1_rjrskim.root        # plain path/glob — scale defaults to 1.0

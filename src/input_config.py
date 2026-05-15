@@ -67,6 +67,7 @@ _PARSER_DEFAULTS = {
     'flags': ['passNHad1SelectionSRTight', 'passNLep1SelectionSRTight'],
     'plots': ['all'],
     'analysis_type': 'uncompressed',
+    'normalize': False,
 }
 
 
@@ -154,7 +155,10 @@ def load_input_config(yaml_path):
     bg_groups = _parse_groups(cfg.get('background', []), base_dir)
     data_groups = _parse_groups(cfg.get('data', []), base_dir)
 
-    override_keys = ('lumi', 'energy', 'plots', 'output', 'tree', 'analysis_type', 'isr_pt_cut')
+    override_keys = (
+        'lumi', 'energy', 'plots', 'output', 'tree', 'analysis_type',
+        'isr_pt_cut', 'normalize'
+    )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
 
     # format: accept "pdf" or ["pdf", "root"] — always store as list

@@ -376,6 +376,8 @@ class DataLoader:
                 'nBaseLinePhotons',
                 'baseLinePhoton_WTimeSig',
                 'baseLinePhoton_isoANNScore',
+                'SV_nHadronic',
+                'SV_nLeptonic',
             }
         elif cut_name == self._PROMPT_PHO_CR_UNCOMPRESSED_GE1:
             required = {
@@ -384,6 +386,8 @@ class DataLoader:
                 'baseLinePhoton_isoANNScore',
                 'baseLinePhoton_Pt',
                 'baseLinePhoton_Eta',
+                'SV_nHadronic',
+                'SV_nLeptonic',
             }
         else:
             return set()
@@ -426,6 +430,8 @@ class DataLoader:
             values = self._event_photon_arrays(chunk, idx, require_pt_eta=False)
             if values is None:
                 continue
+            if chunk['SV_nHadronic'][idx] != 0 or chunk['SV_nLeptonic'][idx] != 0:
+                continue
             _, times, iso, _, _ = values
             mask[idx] = np.all(np.isfinite(times)) and np.all(np.isfinite(iso)) and (
                 np.all(np.abs(times) < 2.5) and np.all(iso < 0.96)
@@ -438,6 +444,8 @@ class DataLoader:
         for idx in range(n_events):
             values = self._event_photon_arrays(chunk, idx)
             if values is None:
+                continue
+            if chunk['SV_nHadronic'][idx] != 0 or chunk['SV_nLeptonic'][idx] != 0:
                 continue
             n_pho, times, iso, pts, etas = values
             if not (

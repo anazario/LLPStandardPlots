@@ -285,6 +285,8 @@ def parse_arguments():
                        help='Analysis type: uncompressed (default) or compressed')
     parser.add_argument('--isr-pt-cut', type=float, default=None,
                        help='Minimum pT(ISR) cut in GeV (compressed mode only). Default: 700 when compressed mode is used.')
+    parser.add_argument('--met-cut', type=float, default=None,
+                       help='Override the baseline selCMet cut in GeV (default: 150).')
     parser.add_argument('--workers', type=int, default=1,
                        help='Number of parallel worker processes for file loading (default: 1)')
     parser.add_argument('--verbose', action='store_true', default=False,
@@ -407,6 +409,9 @@ def main():
 
     # Keep a single string alias used in a few legacy print statements
     output_format = output_formats[0]
+
+    if args.met_cut is not None:
+        AnalysisConfig.MET_CUT = args.met_cut
 
     # Setup
     style = StyleManager(luminosity=args.lumi, energy=args.energy)

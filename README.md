@@ -35,6 +35,7 @@ A flexible plotting framework for Long-Lived Particle (LLP) analyses, designed t
 | `--vars` | Variables to plot in 1D/CR-vs-SR mode (must be in `src/config.py`) | No | Mode-dependent |
 | `--analysis-type` | Analysis type: `uncompressed` or `compressed` | No | `uncompressed` |
 | `--isr-pt-cut` | Minimum p_T(ISR) cut in GeV (compressed mode only) | No | `700` |
+| `--met-cut` | Override the baseline `selCMet` cut in GeV | No | `150` |
 | `--output` | Output file (ROOT) or directory (PDF/PNG) | No | `standard_plots.root` |
 | `--format` | Output format: `root`, `pdf`, `png`, `eps` | No | `root` |
 | `--save-hists` | (ROOT format only) Also write histogram objects alongside canvases | No | False |

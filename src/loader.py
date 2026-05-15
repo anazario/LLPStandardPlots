@@ -1,5 +1,6 @@
 import uproot
 import numpy as np
+from dataclasses import dataclass
 try:
     from tqdm import tqdm
 except ImportError:
@@ -24,6 +25,16 @@ def _merge_chunks(chunks):
         arrays = [c[key] for c in chunks if key in c and len(c[key]) > 0]
         merged[key] = np.concatenate(arrays) if arrays else np.array([])
     return merged
+
+
+@dataclass
+class _CutEvalResult:
+    """Intermediate result for custom-cut evaluation."""
+    kind: str
+    values: object
+    collection: str = None
+    object_masks: object = None
+
 
 class DataLoader:
     _PROMPT_PHO_CR_COMPRESSED_GE1 = 'PROMPT_PHO_CR_COMPRESSED_GE1'
@@ -255,11 +266,13 @@ class DataLoader:
         """
         self._track_loading(event_flags=event_flags, custom_cuts=custom_cuts, is_data=is_data, file_count=len(file_paths))
         branches = self._get_branches_for_mode()
+        branches.extend(self._branches_for_custom_cuts(custom_cuts))
         for flag in event_flags:
             for or_part in flag.split('|'):
                 branches.extend(f.strip() for f in or_part.split('+'))
         branches.extend(self.selection_manager.flags)
         branches.extend(self.selection_manager.inverted_flags)
+        branches = list(dict.fromkeys(branches))
 
         event_data = {flag: {} for flag in event_flags}
         custom_data = {f"CustomRegion{i+1}": {} for i in range(len(custom_cuts))}
@@ -311,6 +324,36 @@ class DataLoader:
         'rjrIsrPTS', 'rjrIsrSdphiBV', 'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects',
         'rjr_Ms', 'rjr_Rs', 'rjrPTS',
     }
+
+    _CUSTOM_CUT_FUNCTIONS = {'any', 'all', 'count', 'lead', 'abs'}
+
+    def _branches_for_custom_cuts(self, custom_cuts):
+        """Return additional tree branches referenced by custom cut strings."""
+        if not custom_cuts:
+            return []
+
+        known_branches = (
+            set(AnalysisConfig.VARIABLES) |
+            self._KNOWN_SCALAR_BRANCHES |
+            set(self.selection_manager.flags) |
+            set(self.selection_manager.inverted_flags)
+        )
+        branches = []
+        for cut in custom_cuts:
+            if self._is_named_custom_cut(cut):
+                continue
+            for token in self._extract_cut_tokens(cut):
+                if token in known_branches:
+                    branches.append(token)
+        return branches
+
+    @classmethod
+    def _extract_cut_tokens(cls, cut_string):
+        import re
+        return {
+            tok for tok in re.findall(r'\b[A-Za-z_]\w*\b', cut_string)
+            if tok not in cls._CUSTOM_CUT_FUNCTIONS
+        }
 
     def _is_named_custom_cut(self, cut_name):
         return cut_name in {
@@ -609,50 +652,11 @@ class DataLoader:
                             named_mask = self._evaluate_named_custom_cut(custom_cut, chunk, n_events)
                             if named_mask is not None:
                                 custom_mask = named_mask
+                                selected_object_masks = None
                             else:
-                                cut_variables = {
-                                    'nSelPhotons': chunk.get("nSelPhotons", np.zeros(n_events)),
-                                    'SV_nHadronic': chunk.get("SV_nHadronic", np.zeros(n_events)),
-                                    'SV_nLeptonic': chunk.get("SV_nLeptonic", np.zeros(n_events)),
-                                    'selCMet':      chunk.get("selCMet",      np.zeros(n_events)),
-                                }
-                                # Add SV object variables (jagged) as first-element scalars per event
-                                for sv_var in ['HadronicSV_dxySig', 'HadronicSV_mass', 'HadronicSV_dxy',
-                                               'HadronicSV_nTracks', 'LeptonicSV_dxySig',
-                                               'LeptonicSV_mass', 'LeptonicSV_dxy']:
-                                    if sv_var in chunk:
-                                        cut_variables[sv_var] = np.array(
-                                            [float(a[0]) if len(a) > 0 else np.nan
-                                             for a in chunk[sv_var]], dtype=float)
-                                # Add photon variables (jagged) as first-element scalars per event.
-                                # Default to NaN when a branch is absent so photon cuts fail
-                                # gracefully on files produced without photon reconstruction.
-                                _nan_pho = np.full(n_events, np.nan)
-                                for pho_var in ['baseLinePhoton_beamHaloCNNScore', 'baseLinePhoton_WTimeSig',
-                                                'baseLinePhoton_Pt', 'baseLinePhoton_Eta',
-                                                'baseLinePhoton_isoANNScore', 'baseLinePhoton_GenTimeSig']:
-                                    if pho_var in chunk:
-                                        cut_variables[pho_var] = np.array(
-                                            [float(a[0]) if len(a) > 0 else np.nan
-                                             for a in chunk[pho_var]], dtype=float)
-                                    else:
-                                        cut_variables[pho_var] = _nan_pho
-                                # nBaseLinePhotons: default 0 (no photons) when branch is absent
-                                cut_variables['nBaseLinePhotons'] = chunk.get(
-                                    'nBaseLinePhotons', np.zeros(n_events, dtype=np.int32))
-                                if self.analysis_mode == AnalysisMode.COMPRESSED:
-                                    for isr_var in ['rjrIsr_Ms', 'rjrIsr_MsPerp', 'rjrIsr_PtIsr',
-                                                   'rjrIsr_RIsr', 'rjrIsr_Rs', 'rjrIsrPTS',
-                                                   'rjrIsr_nSVisObjects', 'rjrIsr_nIsrVisObjects']:
-                                        if isr_var in chunk:
-                                            cut_variables[isr_var] = chunk[isr_var]
-                                elif self.analysis_mode == AnalysisMode.UNCOMPRESSED:
-                                    for unc_var in ['rjr_Ms', 'rjr_Rs', 'rjrPTS']:
-                                        if unc_var in chunk:
-                                            cut_variables[unc_var] = np.array(
-                                                [float(a[0]) if len(a) > 0 else np.nan
-                                                 for a in chunk[unc_var]], dtype=float)
-                                custom_mask = self._parse_simple_cut(custom_cut, cut_variables)
+                                cut_variables = self._build_custom_cut_variables(chunk, n_events)
+                                custom_mask, selected_object_masks = self._evaluate_custom_cut_with_objects(
+                                    custom_cut, cut_variables)
                             combined_mask = base_mask & custom_mask
                         except Exception as e:
                             print(f"  Warning: Failed to evaluate custom cut '{custom_cut}': {e}")
@@ -662,7 +666,9 @@ class DataLoader:
                         custom_pass[i] += n_pass
                         if n_pass == 0:
                             continue
-                        extracted_vars = self._extract_values(chunk, combined_mask, is_data)
+                        extracted_vars = self._extract_values(
+                            chunk, combined_mask, is_data,
+                            selected_object_masks=selected_object_masks)
                         if extracted_vars:
                             n_stored = max((len(v) for v in extracted_vars.values()), default=0)
                             custom_stored_events[i] += n_stored
@@ -712,7 +718,7 @@ class DataLoader:
 
         return file_path, event_result, custom_result
 
-    def _extract_values(self, data, mask, is_data=False):
+    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None):
         """Helper method to extract values for both event flags and custom cuts."""
         # Initialize storage for all variables
         extracted_data = {}
@@ -780,7 +786,15 @@ class DataLoader:
 
                 elif var_key.startswith('HadronicSV_') or var_key.startswith('LeptonicSV_'):
                     sv_array = data[var_key][idx]
-                    if self.analysis_mode == AnalysisMode.COMPRESSED:
+                    collection = 'HadronicSV' if var_key.startswith('HadronicSV_') else 'LeptonicSV'
+                    selected_mask = self._selected_mask_for_event(
+                        selected_object_masks, collection, idx, len(sv_array))
+                    if selected_mask is not None:
+                        for sv_val in np.asarray(sv_array)[selected_mask]:
+                            scaled_val = sv_val * var_config['scale']
+                            extracted_data[var_key].append(scaled_val)
+                            extracted_data[f'{var_key}_weights'].append(base_weight)
+                    elif self.analysis_mode == AnalysisMode.COMPRESSED:
                         # Extract only the leading SV to avoid per-event array flattening
                         # on large data files; consistent with custom-cut evaluation.
                         if len(sv_array) > 0:
@@ -795,7 +809,11 @@ class DataLoader:
 
                 elif var_key.startswith('baseLinePhoton_'):
                     photon_array = data[var_key][idx]
-                    for ph_val in photon_array:
+                    selected_mask = self._selected_mask_for_event(
+                        selected_object_masks, 'baseLinePhoton', idx, len(photon_array))
+                    photon_values = (np.asarray(photon_array)[selected_mask]
+                                     if selected_mask is not None else photon_array)
+                    for ph_val in photon_values:
                         scaled_val = ph_val * var_config['scale']
                         extracted_data[var_key].append(scaled_val)
                         extracted_data[f'{var_key}_weights'].append(base_weight)
@@ -846,12 +864,59 @@ class DataLoader:
 
         return file_data
 
+    def _build_custom_cut_variables(self, chunk, n_events):
+        """Build the variable namespace used by the custom-cut evaluator."""
+        variables = {name: values for name, values in chunk.items()}
+
+        scalar_defaults = {
+            'nSelPhotons': np.zeros(n_events, dtype=np.int32),
+            'SV_nHadronic': np.zeros(n_events, dtype=np.int32),
+            'SV_nLeptonic': np.zeros(n_events, dtype=np.int32),
+            'nBaseLinePhotons': np.zeros(n_events, dtype=np.int32),
+            'selCMet': np.zeros(n_events, dtype=float),
+            'evtFillWgt': np.zeros(n_events, dtype=float),
+        }
+        for name, default in scalar_defaults.items():
+            variables.setdefault(name, default)
+
+        return variables
+
+    @staticmethod
+    def _selected_mask_for_event(selected_object_masks, collection, idx, expected_len):
+        if not selected_object_masks or collection not in selected_object_masks:
+            return None
+        if idx >= len(selected_object_masks[collection]):
+            return None
+
+        selected = np.asarray(selected_object_masks[collection][idx], dtype=bool)
+        if len(selected) != expected_len:
+            n = min(len(selected), expected_len)
+            padded = np.zeros(expected_len, dtype=bool)
+            if n:
+                padded[:n] = selected[:n]
+            selected = padded
+        return selected
+
     def _parse_simple_cut(self, cut_string, variables):
         """
-        Parse simple cut expressions without eval().
-        Supports patterns like: 'var==value', 'var1==val1 && var2==val2'
-        Handles &&, &, and || as logical operators.
+        Parse custom cut expressions without eval().
+
+        Vector branches are evaluated object-by-object.  Conditions joined by
+        AND on the same object collection must pass on the same object; the
+        collection mask is then reduced to an event mask with implicit any().
+        Explicit reducers are also supported:
+          any(expr), all(expr), count(expr) >= N, lead(var) > value.
         """
+        result = self._parse_cut_expr(cut_string, variables, reduce_objects=True)
+        return self._result_to_event_mask(result, self._event_count_from_variables(variables))
+
+    def _evaluate_custom_cut_with_objects(self, cut_string, variables):
+        result = self._parse_cut_expr(cut_string, variables, reduce_objects=True)
+        event_mask = self._result_to_event_mask(
+            result, self._event_count_from_variables(variables))
+        return event_mask, (result.object_masks or {})
+
+    def _parse_cut_expr(self, cut_string, variables, reduce_objects=True):
         import re
 
         cut_string = cut_string.strip()
@@ -870,34 +935,41 @@ class DataLoader:
                     matched = False
                     break
             if matched:
-                return self._parse_simple_cut(cut_string[1:-1], variables)
+                return self._parse_cut_expr(cut_string[1:-1], variables, reduce_objects=reduce_objects)
 
-        # Normalize logical operators: replace '&&' with ' & ' and '||' with ' | '
+        # Normalize logical operators so both "a&b" and "a & b" parse.
         normalized = cut_string.replace('&&', ' & ').replace('||', ' | ')
+        normalized = re.sub(r'(?<!&)&(?!&)', ' & ', normalized)
+        normalized = re.sub(r'(?<!\|)\|(?!\|)', ' | ', normalized)
 
         # Split on OR first (lower precedence), respecting parentheses
         or_parts = self._split_respecting_parens(normalized, ' | ')
         if len(or_parts) > 1:
             result_mask = None
             for part in or_parts:
-                part_mask = self._parse_simple_cut(part, variables)
+                part_mask = self._parse_cut_expr(part, variables, reduce_objects=reduce_objects)
                 if result_mask is None:
                     result_mask = part_mask
                 else:
-                    result_mask = result_mask | part_mask
+                    result_mask = self._combine_or_results(result_mask, part_mask, variables)
             return result_mask
 
         # Then split on AND, respecting parentheses
         and_parts = self._split_respecting_parens(normalized, ' & ')
         if len(and_parts) > 1:
-            result_mask = None
+            scalar_masks = []
+            object_masks = {}
             for part in and_parts:
-                part_mask = self._parse_simple_cut(part, variables)
-                if result_mask is None:
-                    result_mask = part_mask
+                part_result = self._parse_cut_expr(part, variables, reduce_objects=False)
+                if part_result.kind == 'object':
+                    existing = object_masks.get(part_result.collection)
+                    object_masks[part_result.collection] = (
+                        part_result.values if existing is None
+                        else self._combine_object_masks(existing, part_result.values, '&')
+                    )
                 else:
-                    result_mask = result_mask & part_mask
-            return result_mask
+                    scalar_masks.append(part_result.values)
+            return self._finalize_and_result(scalar_masks, object_masks, variables, reduce_objects)
 
         # Single condition
         return self._evaluate_single_condition(cut_string.strip(), variables)
@@ -929,24 +1001,90 @@ class DataLoader:
 
     def _evaluate_single_condition(self, condition, variables):
         """
-        Evaluate a single condition like 'nSelPhotons==1'
+        Evaluate a single condition like 'nSelPhotons==1'.
         """
         import re
-        
-        # Parse condition with regex ($ anchor ensures full match, no trailing text ignored)
-        match = re.match(r'(\w+)\s*(==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)?)\s*$', condition)
+
+        reducer_match = self._match_function_call(condition, 'any')
+        if reducer_match is not None:
+            inner = self._parse_cut_expr(reducer_match, variables, reduce_objects=False)
+            return _CutEvalResult(
+                'scalar',
+                self._reduce_result(inner, 'any', variables),
+                object_masks=inner.object_masks)
+
+        reducer_match = self._match_function_call(condition, 'all')
+        if reducer_match is not None:
+            inner = self._parse_cut_expr(reducer_match, variables, reduce_objects=False)
+            return _CutEvalResult(
+                'scalar',
+                self._reduce_result(inner, 'all', variables),
+                object_masks=inner.object_masks)
+
+        count_match = re.match(
+            r'count\s*\((.*)\)\s*(==|!=|<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*$',
+            condition
+        )
+        if count_match:
+            inner_expr, operator, value_str = count_match.groups()
+            inner = self._parse_cut_expr(inner_expr, variables, reduce_objects=False)
+            counts = self._count_result(inner, variables)
+            value = self._parse_numeric_value(value_str)
+            return _CutEvalResult(
+                'scalar',
+                self._apply_operator(counts, operator, value),
+                object_masks=inner.object_masks)
+
+        lead_match = re.match(
+            r'lead\s*\(\s*(\w+)\s*\)\s*(==|!=|<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*$',
+            condition
+        )
+        if lead_match:
+            var_name, operator, value_str = lead_match.groups()
+            values = self._leading_values(var_name, variables)
+            value = self._parse_numeric_value(value_str)
+            return _CutEvalResult('scalar', self._apply_operator(values, operator, value))
+
+        # Parse condition with regex ($ anchor ensures full match, no trailing text ignored).
+        # Supports abs(var) and negative numeric thresholds.
+        match = re.match(
+            r'(abs\s*\(\s*(\w+)\s*\)|(\w+))\s*(==|!=|<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*$',
+            condition
+        )
         if not match:
             raise ValueError(f"Cannot parse condition: {condition}")
-            
-        var_name, operator, value_str = match.groups()
-        
+
+        left_expr, abs_var, plain_var, operator, value_str = match.groups()
+        var_name = abs_var or plain_var
+
+        value = self._parse_numeric_value(value_str)
+        use_abs = left_expr.strip().startswith('abs')
+        collection = self._collection_for_branch(var_name)
+
+        if collection:
+            object_values = self._object_values(var_name, variables, use_abs=use_abs)
+            object_mask = [self._apply_operator(values, operator, value) for values in object_values]
+            return _CutEvalResult(
+                'object',
+                object_mask,
+                collection,
+                {collection: object_mask}
+            )
+
         if var_name not in variables:
             raise ValueError(f"Unknown variable: {var_name}")
-            
-        array = variables[var_name]
-        value = float(value_str) if '.' in value_str else int(value_str)
-        
-        # Apply the operation
+
+        array = np.asarray(variables[var_name])
+        if use_abs:
+            array = np.abs(array)
+        return _CutEvalResult('scalar', self._apply_operator(array, operator, value))
+
+    @staticmethod
+    def _parse_numeric_value(value_str):
+        return float(value_str) if '.' in value_str else int(value_str)
+
+    @staticmethod
+    def _apply_operator(array, operator, value):
         if operator == '==':
             return array == value
         elif operator == '!=':
@@ -961,6 +1099,188 @@ class DataLoader:
             return array >= value
         else:
             raise ValueError(f"Unknown operator: {operator}")
+
+    def _match_function_call(self, text, name):
+        prefix = f'{name}('
+        compact = text.replace(' ', '')
+        if not compact.startswith(prefix) or not text.endswith(')'):
+            return None
+
+        start = text.find('(')
+        depth = 0
+        for i, ch in enumerate(text[start:], start=start):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    return text[start + 1:i].strip() if i == len(text) - 1 else None
+        return None
+
+    @staticmethod
+    def _collection_for_branch(var_name):
+        if var_name.startswith('HadronicSV_'):
+            return 'HadronicSV'
+        if var_name.startswith('LeptonicSV_'):
+            return 'LeptonicSV'
+        if var_name.startswith('baseLinePhoton_'):
+            return 'baseLinePhoton'
+        if var_name in {'rjr_Ms', 'rjr_Rs', 'rjrPTS'}:
+            return 'rjr'
+        return None
+
+    def _event_count_from_variables(self, variables):
+        for values in variables.values():
+            try:
+                return len(values)
+            except TypeError:
+                continue
+        return 0
+
+    def _object_values(self, var_name, variables, use_abs=False):
+        n_events = self._event_count_from_variables(variables)
+        raw = variables.get(var_name)
+        if raw is None:
+            return [np.array([], dtype=float) for _ in range(n_events)]
+
+        values = []
+        for item in raw:
+            arr = np.asarray(item, dtype=float)
+            if use_abs:
+                arr = np.abs(arr)
+            values.append(arr)
+        return values
+
+    def _leading_values(self, var_name, variables):
+        if var_name not in variables:
+            raise ValueError(f"Unknown variable: {var_name}")
+
+        collection = self._collection_for_branch(var_name)
+        if not collection:
+            return np.asarray(variables[var_name])
+
+        lead = []
+        for values in variables[var_name]:
+            arr = np.asarray(values, dtype=float)
+            lead.append(float(arr[0]) if len(arr) > 0 else np.nan)
+        return np.asarray(lead, dtype=float)
+
+    def _combine_object_masks(self, left, right, operator):
+        combined = []
+        for left_evt, right_evt in zip(left, right):
+            left_arr = np.asarray(left_evt, dtype=bool)
+            right_arr = np.asarray(right_evt, dtype=bool)
+            n = min(len(left_arr), len(right_arr))
+            if operator == '&':
+                combined.append(left_arr[:n] & right_arr[:n])
+            elif operator == '|':
+                combined.append(left_arr[:n] | right_arr[:n])
+            else:
+                raise ValueError(f"Unknown object-mask operator: {operator}")
+        return combined
+
+    def _merge_object_mask_maps(self, left, right, operator):
+        if not left and not right:
+            return None
+
+        merged = {}
+        for collection in set((left or {}).keys()) | set((right or {}).keys()):
+            if left and collection in left and right and collection in right:
+                merged[collection] = self._combine_object_masks(
+                    left[collection], right[collection], operator)
+            elif left and collection in left:
+                merged[collection] = left[collection]
+            else:
+                merged[collection] = right[collection]
+        return merged
+
+    def _gate_and_object_masks(self, object_masks, scalar_mask):
+        gated_masks = {}
+        event_masks_by_collection = {
+            collection: self._reduce_object_mask(mask, 'any')
+            for collection, mask in object_masks.items()
+        }
+
+        for collection, obj_mask in object_masks.items():
+            gated = []
+            other_event_mask = np.asarray(scalar_mask, dtype=bool).copy()
+            for other_collection, other_mask in event_masks_by_collection.items():
+                if other_collection != collection:
+                    other_event_mask &= other_mask
+
+            for evt_mask, event_pass in zip(obj_mask, other_event_mask):
+                gated.append(np.asarray(evt_mask, dtype=bool) & bool(event_pass))
+            gated_masks[collection] = gated
+        return gated_masks
+
+    def _combine_or_results(self, left, right, variables):
+        if left.kind == 'object' and right.kind == 'object' and left.collection == right.collection:
+            object_mask = self._combine_object_masks(left.values, right.values, '|')
+            return _CutEvalResult(
+                'object',
+                object_mask,
+                left.collection,
+                {left.collection: object_mask}
+            )
+
+        left_mask = self._result_to_event_mask(left, self._event_count_from_variables(variables))
+        right_mask = self._result_to_event_mask(right, self._event_count_from_variables(variables))
+        return _CutEvalResult(
+            'scalar',
+            left_mask | right_mask,
+            object_masks=self._merge_object_mask_maps(left.object_masks, right.object_masks, '|'))
+
+    def _finalize_and_result(self, scalar_masks, object_masks, variables, reduce_objects):
+        n_events = self._event_count_from_variables(variables)
+        scalar_mask = np.ones(n_events, dtype=bool)
+        for mask in scalar_masks:
+            scalar_mask &= np.asarray(mask, dtype=bool)
+
+        if not object_masks:
+            return _CutEvalResult('scalar', scalar_mask)
+
+        if not reduce_objects and len(object_masks) == 1:
+            collection, obj_mask = next(iter(object_masks.items()))
+            gated = []
+            for evt_mask, scalar_pass in zip(obj_mask, scalar_mask):
+                gated.append(np.asarray(evt_mask, dtype=bool) & bool(scalar_pass))
+            return _CutEvalResult('object', gated, collection, {collection: gated})
+
+        event_mask = scalar_mask
+        for obj_mask in object_masks.values():
+            event_mask &= self._reduce_object_mask(obj_mask, 'any')
+        return _CutEvalResult(
+            'scalar',
+            event_mask,
+            object_masks=self._gate_and_object_masks(object_masks, scalar_mask))
+
+    def _result_to_event_mask(self, result, n_events):
+        if result.kind == 'scalar':
+            return np.asarray(result.values, dtype=bool)
+        return self._reduce_object_mask(result.values, 'any')
+
+    def _reduce_result(self, result, reducer, variables):
+        if result.kind == 'scalar':
+            return np.asarray(result.values, dtype=bool)
+        return self._reduce_object_mask(result.values, reducer)
+
+    @staticmethod
+    def _reduce_object_mask(object_mask, reducer):
+        reduced = []
+        for evt_mask in object_mask:
+            arr = np.asarray(evt_mask, dtype=bool)
+            if reducer == 'any':
+                reduced.append(bool(np.any(arr)) if len(arr) > 0 else False)
+            elif reducer == 'all':
+                reduced.append(bool(np.all(arr)) if len(arr) > 0 else False)
+            else:
+                raise ValueError(f"Unknown reducer: {reducer}")
+        return np.asarray(reduced, dtype=bool)
+
+    def _count_result(self, result, variables):
+        if result.kind == 'scalar':
+            return np.asarray(result.values, dtype=np.int32)
+        return np.asarray([np.count_nonzero(evt_mask) for evt_mask in result.values], dtype=np.int32)
 
     def combine_data(self, data_dict):
         """Combines data from multiple files (e.g. for total background)."""

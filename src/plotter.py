@@ -627,18 +627,25 @@ class PlotterDataMC(PlotterBase):
         
         # Create MC histograms
         mc_histograms = []
+        mapped_var = self._map_var_name(var_name)
         for i, (filename, data) in enumerate(mc_collection.items()):
+            values = data.get(mapped_var)
+            if values is None or len(values) == 0:
+                continue
+
             color = self._get_background_color_index(filename)
-            
-            # Use the correct weights for this specific variable
-            mapped_var = self._map_var_name(var_name)
+
             var_weights_key = f'{mapped_var}_weights'
             weights_to_use = data.get(var_weights_key, data.get('weights', []))
-            
-            h = self.create_histogram(data[mapped_var], weights_to_use, bins, x_min, x_max, filename, color=color)
-            
+
+            h = self.create_histogram(values, weights_to_use, bins, x_min, x_max, filename, color=color)
+
             bg_name = self._clean_mc_label(parse_background_name(filename))
             mc_histograms.append((h, bg_name))
+
+        if not mc_histograms:
+            print(f"  Warning: No MC entries for Data/MC plot variable '{mapped_var}' in {suffix}; skipping.")
+            return None
         
         # Sort MC histograms by yield (ascending order)
         mc_histograms.sort(key=lambda x: x[0].Integral())
@@ -665,9 +672,8 @@ class PlotterDataMC(PlotterBase):
         if not blind_data and data_collection:
             # Combine all data files
             combined_data = self._combine_data_collections(data_collection)
-            if combined_data:
+            if combined_data and mapped_var in combined_data and len(combined_data[mapped_var]) > 0:
                 # Use the correct weights for this specific variable
-                mapped_var = self._map_var_name(var_name)
                 var_weights_key = f'{mapped_var}_weights'
                 weights_to_use = combined_data.get(var_weights_key, combined_data.get('weights', []))
                 data_hist = self.create_histogram(combined_data[mapped_var], weights_to_use, bins, x_min, x_max, "data", color=self.data_color)

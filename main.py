@@ -668,7 +668,8 @@ def main():
                         nbins, xmin, xmax, blind_data=blind_data, 
                         final_state_label=fs_label_latex, suffix=flag
                     )
-                    save_canvas(canvas, output_format, f_out, output_dir, datamc_subdir)
+                    if canvas:
+                        save_canvas(canvas, output_format, f_out, output_dir, datamc_subdir)
             
             # Return to parent directory
             if use_root_file:
@@ -700,7 +701,8 @@ def main():
                             nbins, xmin, xmax, blind_data=blind_data, 
                             final_state_label=fs_label_latex, suffix=flag, normalized=True
                         )
-                        save_canvas(canvas_norm, output_format, f_out, output_dir, datamc_norm_subdir)
+                        if canvas_norm:
+                            save_canvas(canvas_norm, output_format, f_out, output_dir, datamc_norm_subdir)
                 
                 # Return to parent directory
                 if use_root_file:

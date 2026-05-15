@@ -14,7 +14,7 @@ class AnalysisConfig:
         'rjr_Ms': {
             'name': 'ms',                 # Internal short name
             'label': 'M_{S} [TeV]',       # LaTeX label
-            'bins': 50,
+            'bins': 30,
             'range': (0, 10),             # (min, max)
             'scale': 0.001,               # Scale factor (e.g. GeV -> TeV)
             'is_vector': True,            # If it requires the vector loop extraction
@@ -23,7 +23,7 @@ class AnalysisConfig:
         'rjr_Rs': {
             'name': 'rs',
             'label': 'R_{S}',
-            'bins': 50,
+            'bins': 30,
             'range': (0, 1.0),
             'scale': 1.0,
             'is_vector': True,
@@ -41,7 +41,7 @@ class AnalysisConfig:
         'HadronicSV_dxy': {
             'name': 'had_dxy',
             'label': 'd_{xy} [cm]',
-            'bins': 50,
+            'bins': 15,
             'range': (0, 50),
             'scale': 1.0,
             'is_vector': True
@@ -97,7 +97,7 @@ class AnalysisConfig:
         'LeptonicSV_dxy': {
             'name': 'lep_dxy',
             'label': 'd_{xy} [cm]',
-            'bins': 50,
+            'bins': 25,
             'range': (0, 50),
             'scale': 1.0,
             'is_vector': True

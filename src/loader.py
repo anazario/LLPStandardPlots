@@ -119,7 +119,8 @@ class DataLoader:
         elif self.analysis_mode == AnalysisMode.COMPRESSED:
             baseline_cuts.append("rjrIsr_nSVisObjects > 0")
             if self.isr_pt_cut is not None:
-                baseline_cuts.append(f"rjrIsr_PtIsr >= {self.isr_pt_cut:.0f}")
+                baseline_cuts.append(f"per-variable PtISR N-1 cut >= {self.isr_pt_cut:.0f}")
+            baseline_cuts.append(f"per-variable RISR N-1 cut >= {AnalysisConfig.ISR_RISR_CUT:.1f}")
 
         print(f"    • Baseline cuts: {', '.join(baseline_cuts)}")
 
@@ -573,9 +574,6 @@ class DataLoader:
                     cut_expr = f"({cut_expr}) & ({scalar_prefilter})"
 
                 if self.analysis_mode == AnalysisMode.COMPRESSED:
-                    if (self.isr_pt_cut is not None and
-                            'rjrIsr_PtIsr' in available_branches):
-                        cut_expr += f" & (rjrIsr_PtIsr >= {self.isr_pt_cut})"
                     if 'rjrIsr_nSVisObjects' in available_branches:
                         cut_expr += " & (rjrIsr_nSVisObjects > 0)"
 
@@ -718,6 +716,31 @@ class DataLoader:
 
         return file_path, event_result, custom_result
 
+    def _passes_compressed_plane_cuts(self, var_key, data, idx):
+        """
+        Apply compressed PtISR/RISR cuts per plotted variable.
+
+        PtISR is plotted with the RISR cut only, RISR is plotted with the PtISR
+        cut only, and all other variables get both plane cuts.
+        """
+        if self.analysis_mode != AnalysisMode.COMPRESSED:
+            return True
+
+        if 'rjrIsr_PtIsr' not in data or 'rjrIsr_RIsr' not in data:
+            return False
+
+        passes_pt = (
+            self.isr_pt_cut is None or
+            data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut
+        )
+        passes_risr = data['rjrIsr_RIsr'][idx] >= AnalysisConfig.ISR_RISR_CUT
+
+        if var_key == 'rjrIsr_PtIsr':
+            return passes_risr
+        if var_key == 'rjrIsr_RIsr':
+            return passes_pt
+        return passes_pt and passes_risr
+
     def _extract_values(self, data, mask, is_data=False, selected_object_masks=None):
         """Helper method to extract values for both event flags and custom cuts."""
         # Initialize storage for all variables
@@ -738,12 +761,12 @@ class DataLoader:
                     data['rjrPTS'][idx][0] < AnalysisConfig.RJR_PTS_CUT):
                     passes_validation = True
             else:
-                # Compressed mode: require rjrIsr_PtIsr, rjrIsr_nSVisObjects > 0, and ISR pT cut
-                if 'rjrIsr_PtIsr' in data and 'rjrIsr_nSVisObjects' in data:
-                    passes_pt = (self.isr_pt_cut is None or
-                                 data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut)
+                # Compressed mode: require ISR plane variables and nSVisObjects.
+                # PtISR/RISR cuts are applied per plotted variable for N-1 behavior.
+                if ('rjrIsr_PtIsr' in data and 'rjrIsr_RIsr' in data and
+                        'rjrIsr_nSVisObjects' in data):
                     passes_nsv = data['rjrIsr_nSVisObjects'][idx] > 0
-                    passes_validation = passes_pt and passes_nsv
+                    passes_validation = passes_nsv
 
             if not passes_validation:
                 continue
@@ -758,6 +781,9 @@ class DataLoader:
 
                 # Skip MC-only variables when processing data
                 if var_config.get('mc_only', False) and is_data:
+                    continue
+
+                if not self._passes_compressed_plane_cuts(var_key, data, idx):
                     continue
 
                 if var_key not in extracted_data:

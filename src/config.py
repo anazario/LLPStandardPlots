@@ -4,6 +4,7 @@ class AnalysisConfig:
     # Selection Constants
     MET_CUT = 150.0
     RJR_PTS_CUT = 150.0
+    ISR_RISR_CUT = 0.4
     EVT_WGT_CUT = 10.0
     
     # Variable Definitions

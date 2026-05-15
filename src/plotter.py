@@ -927,20 +927,15 @@ class PlotterDataMC(PlotterBase):
         """Combine data from multiple files into single dataset."""
         if not data_collection:
             return None
-            
-        # Get the first file's data structure
-        first_file_data = next(iter(data_collection.values()))
-        combined_data = {}
-        
-        # Initialize with empty arrays
-        for key in first_file_data.keys():
-            combined_data[key] = []
+
+        combined_data = {
+            key: [] for key in sorted({key for data in data_collection.values() for key in data})
+        }
         
         # Combine data from all files
         for file_data in data_collection.values():
             for key, values in file_data.items():
-                if key in combined_data:
-                    combined_data[key].extend(values)
+                combined_data[key].extend(values)
         
         # Convert to numpy arrays
         for key in combined_data:

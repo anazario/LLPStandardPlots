@@ -21,7 +21,7 @@ def _merge_chunks(chunks):
     if not chunks:
         return {}
     merged = {}
-    for key in chunks[0]:
+    for key in sorted({key for chunk in chunks for key in chunk}):
         arrays = [c[key] for c in chunks if key in c and len(c[key]) > 0]
         merged[key] = np.concatenate(arrays) if arrays else np.array([])
     return merged
@@ -695,6 +695,18 @@ class DataLoader:
                         print(f"  custom cut {i+1}: {custom_pass[i]:,} events pass cut  |  "
                               f"{custom_stored_events[i]:,} stored entries  |  "
                               f"accumulated {acc_mb:.1f} MB in custom_chunks")
+                        if custom_chunks[region]:
+                            merged_keys = sorted({
+                                key for chunk_vars in custom_chunks[region]
+                                for key in chunk_vars
+                                if not key.endswith('_weights')
+                            })
+                            counts = {
+                                key: sum(len(chunk_vars.get(key, ())) for chunk_vars in custom_chunks[region])
+                                for key in merged_keys
+                            }
+                            print("    stored by variable: " +
+                                  ", ".join(f"{key}={count:,}" for key, count in counts.items()))
 
                 # Merge chunks
                 for fs_flag in event_flags:
@@ -1318,9 +1330,10 @@ class DataLoader:
         if not data_dict:
             return None
 
-        # Get all keys from the first file's data
-        first_data = next(iter(data_dict.values()))
-        all_keys = list(first_data.keys())
+        # Use the union of keys.  In compressed N-1 plots a file can have entries
+        # for PtISR but zero entries for another variable after plane cuts; using
+        # only the first file's keys silently dropped later files' populated vars.
+        all_keys = sorted({key for data in data_dict.values() for key in data})
 
         # Combine all variables that exist across all files
         combined = {}

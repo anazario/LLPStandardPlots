@@ -1001,18 +1001,22 @@ class DataLoader:
         if len(and_parts) > 1:
             scalar_masks = []
             object_masks = {}
+            selection_object_masks = {}
             for part in and_parts:
                 part_result = self._parse_cut_expr(part, variables, reduce_objects=False)
                 if part_result.object_masks:
+                    target_masks = object_masks if part_result.kind == 'object' else selection_object_masks
                     for collection, part_mask in part_result.object_masks.items():
-                        existing = object_masks.get(collection)
-                        object_masks[collection] = (
+                        existing = target_masks.get(collection)
+                        target_masks[collection] = (
                             part_mask if existing is None
                             else self._combine_object_masks(existing, part_mask, '&')
                         )
                 if part_result.kind != 'object':
                     scalar_masks.append(part_result.values)
-            return self._finalize_and_result(scalar_masks, object_masks, variables, reduce_objects)
+            return self._finalize_and_result(
+                scalar_masks, object_masks, variables, reduce_objects,
+                selection_object_masks=selection_object_masks)
 
         # Single condition
         return self._evaluate_single_condition(cut_string.strip(), variables)
@@ -1237,6 +1241,15 @@ class DataLoader:
                 merged[collection] = right[collection]
         return merged
 
+    def _gate_object_masks_by_event(self, object_masks, event_mask):
+        gated_masks = {}
+        for collection, obj_mask in object_masks.items():
+            gated = []
+            for evt_mask, event_pass in zip(obj_mask, np.asarray(event_mask, dtype=bool)):
+                gated.append(np.asarray(evt_mask, dtype=bool) & bool(event_pass))
+            gated_masks[collection] = gated
+        return gated_masks
+
     def _gate_and_object_masks(self, object_masks, scalar_mask):
         gated_masks = {}
         event_masks_by_collection = {
@@ -1273,29 +1286,47 @@ class DataLoader:
             left_mask | right_mask,
             object_masks=self._merge_object_mask_maps(left.object_masks, right.object_masks, '|'))
 
-    def _finalize_and_result(self, scalar_masks, object_masks, variables, reduce_objects):
+    def _finalize_and_result(self, scalar_masks, object_masks, variables, reduce_objects,
+                             selection_object_masks=None):
         n_events = self._event_count_from_variables(variables)
         scalar_mask = np.ones(n_events, dtype=bool)
         for mask in scalar_masks:
             scalar_mask &= np.asarray(mask, dtype=bool)
 
+        selection_object_masks = selection_object_masks or {}
+
         if not object_masks:
-            return _CutEvalResult('scalar', scalar_mask)
+            return _CutEvalResult(
+                'scalar',
+                scalar_mask,
+                object_masks=self._gate_object_masks_by_event(selection_object_masks, scalar_mask))
 
         if not reduce_objects and len(object_masks) == 1:
             collection, obj_mask = next(iter(object_masks.items()))
             gated = []
             for evt_mask, scalar_pass in zip(obj_mask, scalar_mask):
                 gated.append(np.asarray(evt_mask, dtype=bool) & bool(scalar_pass))
-            return _CutEvalResult('object', gated, collection, {collection: gated})
+            result_masks = {collection: gated}
+            if selection_object_masks:
+                result_masks = self._merge_object_mask_maps(
+                    result_masks,
+                    self._gate_object_masks_by_event(selection_object_masks, scalar_mask),
+                    '&')
+            return _CutEvalResult('object', gated, collection, result_masks)
 
         event_mask = scalar_mask
         for obj_mask in object_masks.values():
             event_mask &= self._reduce_object_mask(obj_mask, 'any')
+        result_object_masks = self._gate_and_object_masks(object_masks, scalar_mask)
+        if selection_object_masks:
+            result_object_masks = self._merge_object_mask_maps(
+                result_object_masks,
+                self._gate_object_masks_by_event(selection_object_masks, event_mask),
+                '&')
         return _CutEvalResult(
             'scalar',
             event_mask,
-            object_masks=self._gate_and_object_masks(object_masks, scalar_mask))
+            object_masks=result_object_masks)
 
     def _result_to_event_mask(self, result, n_events):
         if result.kind == 'scalar':

@@ -813,18 +813,14 @@ class DataLoader:
                 elif var_key.startswith('HadronicSV_') or var_key.startswith('LeptonicSV_'):
                     sv_array = data[var_key][idx]
                     collection = 'HadronicSV' if var_key.startswith('HadronicSV_') else 'LeptonicSV'
+                    count_branch = 'SV_nHadronic' if collection == 'HadronicSV' else 'SV_nLeptonic'
+                    if count_branch in data and data[count_branch][idx] <= 0:
+                        continue
                     selected_mask = self._selected_mask_for_event(
                         selected_object_masks, collection, idx, len(sv_array))
                     if selected_mask is not None:
                         for sv_val in np.asarray(sv_array)[selected_mask]:
                             scaled_val = sv_val * var_config['scale']
-                            extracted_data[var_key].append(scaled_val)
-                            extracted_data[f'{var_key}_weights'].append(base_weight)
-                    elif self.analysis_mode == AnalysisMode.COMPRESSED:
-                        # Extract only the leading SV to avoid per-event array flattening
-                        # on large data files; consistent with custom-cut evaluation.
-                        if len(sv_array) > 0:
-                            scaled_val = float(sv_array[0]) * var_config['scale']
                             extracted_data[var_key].append(scaled_val)
                             extracted_data[f'{var_key}_weights'].append(base_weight)
                     else:
@@ -987,13 +983,14 @@ class DataLoader:
             object_masks = {}
             for part in and_parts:
                 part_result = self._parse_cut_expr(part, variables, reduce_objects=False)
-                if part_result.kind == 'object':
-                    existing = object_masks.get(part_result.collection)
-                    object_masks[part_result.collection] = (
-                        part_result.values if existing is None
-                        else self._combine_object_masks(existing, part_result.values, '&')
-                    )
-                else:
+                if part_result.object_masks:
+                    for collection, part_mask in part_result.object_masks.items():
+                        existing = object_masks.get(collection)
+                        object_masks[collection] = (
+                            part_mask if existing is None
+                            else self._combine_object_masks(existing, part_mask, '&')
+                        )
+                if part_result.kind != 'object':
                     scalar_masks.append(part_result.values)
             return self._finalize_and_result(scalar_masks, object_masks, variables, reduce_objects)
 

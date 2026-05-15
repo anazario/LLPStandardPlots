@@ -92,6 +92,20 @@ class PlotterBase:
                 return branch
         return var_name
 
+    @staticmethod
+    def _hist_has_content(hist):
+        if hist is None:
+            return False
+        if hist.GetEntries() > 0:
+            return True
+
+        # Weighted ROOT histograms can have useful bin contents/errors even
+        # when the entries counter is not reliable. Include under/overflow.
+        for i in range(hist.GetNbinsX() + 2):
+            if hist.GetBinContent(i) != 0 or hist.GetBinError(i) != 0:
+                return True
+        return False
+
 class Plotter1D(PlotterBase):
     def __init__(self, style_manager):
         super().__init__(style_manager)
@@ -166,11 +180,14 @@ class Plotter1D(PlotterBase):
         max_y = 0
 
         for i, (filename, data) in enumerate(data_collection.items()):
-            if mapped_key not in data:
+            values = data.get(mapped_key)
+            if values is None or len(values) == 0:
                 continue
             color = self.style.get_color(i)
             weights = data.get(var_weights_key, data.get('weights', []))
-            h = self.create_histogram(data[mapped_key], weights, bins, x_min, x_max, filename, color=color)
+            h = self.create_histogram(values, weights, bins, x_min, x_max, filename, color=color)
+            if not self._hist_has_content(h):
+                continue
             if normalized and h.Integral() > 0:
                 h.Scale(1.0 / h.Integral())
             
@@ -220,9 +237,17 @@ class Plotter1D(PlotterBase):
         canvas = self._initialize_canvas(canvas_name, x_min, x_max, var_label)
         
         legend = CMS.cmsLeg(0.35, 0.675, 0.65, 0.874, textSize=0.035)
+        mapped_var = self._map_var_name(var_name)
+
+        bg_values = background_combined.get(mapped_var) if background_combined else None
+        if bg_values is None or len(bg_values) == 0:
+            return None, None, []
         
         # Background
-        bg_hist = self.create_histogram(background_combined[self._map_var_name(var_name)], background_combined['weights'], bins, x_min, x_max, "Total Background")
+        bg_weights = background_combined.get(f'{mapped_var}_weights', background_combined.get('weights', []))
+        bg_hist = self.create_histogram(bg_values, bg_weights, bins, x_min, x_max, "Total Background")
+        if not self._hist_has_content(bg_hist):
+            return None, None, []
         bg_hist.SetFillColor(ROOT.kGray+1)
         bg_hist.SetLineColor(ROOT.kGray+2)
         bg_hist.SetFillStyle(3004)
@@ -235,10 +260,16 @@ class Plotter1D(PlotterBase):
         # Signals
         sig_hists = []
         for i, (filename, data) in enumerate(signals_data.items()):
+            values = data.get(mapped_var)
+            if values is None or len(values) == 0:
+                continue
             # Use distinct colors for signals
             color = self.style.get_color(i)
-            
-            h = self.create_histogram(data[self._map_var_name(var_name)], data['weights'], bins, x_min, x_max, filename, color=color)
+
+            weights = data.get(f'{mapped_var}_weights', data.get('weights', []))
+            h = self.create_histogram(values, weights, bins, x_min, x_max, filename, color=color)
+            if not self._hist_has_content(h):
+                continue
             if normalized and h.Integral() > 0:
                 h.Scale(1.0 / h.Integral())
             
@@ -301,6 +332,8 @@ class Plotter1D(PlotterBase):
             weights = data.get(var_weights_key, data.get('weights', []))
             h = self.create_histogram(data[mapped_var], weights, bins, x_min, x_max,
                                       file_path, color=self.style.get_color(i))
+            if not self._hist_has_content(h):
+                continue
             if h.Integral() > 0:
                 h.Scale(1.0 / h.Integral())
             max_y = max(max_y, h.GetMaximum())
@@ -318,20 +351,25 @@ class Plotter1D(PlotterBase):
         if all_cr_vals:
             h_cr = self.create_histogram(np.array(all_cr_vals), np.array(all_cr_weights),
                                          bins, x_min, x_max, "data_cr", color=ROOT.kBlack)
-            if h_cr.Integral() > 0:
-                h_cr.Scale(1.0 / h_cr.Integral())
-            h_cr.SetLineWidth(3)
-            max_y = max(max_y, h_cr.GetMaximum())
-            legend.AddEntry(h_cr, cr_label, "l")
+            if not self._hist_has_content(h_cr):
+                h_cr = None
+            else:
+                if h_cr.Integral() > 0:
+                    h_cr.Scale(1.0 / h_cr.Integral())
+                h_cr.SetLineWidth(3)
+                max_y = max(max_y, h_cr.GetMaximum())
+                legend.AddEntry(h_cr, cr_label, "l")
 
         # Draw: signals first so data CR lands on top
         all_hists = sig_hists + ([h_cr] if h_cr is not None else [])
-        if all_hists:
-            self.setup_axes(all_hists[0], var_label, normalized=True)
-            all_hists[0].GetYaxis().SetRangeUser(0.0001, max_y * 100)
-            all_hists[0].Draw("HIST")
-            for h in all_hists[1:]:
-                h.Draw("HIST SAME")
+        if not all_hists:
+            return None
+
+        self.setup_axes(all_hists[0], var_label, normalized=True)
+        all_hists[0].GetYaxis().SetRangeUser(0.0001, max_y * 100)
+        all_hists[0].Draw("HIST")
+        for h in all_hists[1:]:
+            h.Draw("HIST SAME")
 
         legend.Draw()
         canvas.SetLogy()
@@ -390,6 +428,9 @@ class Plotter2D(PlotterBase):
         hist = self.create_2d_histogram(x_data, y_data, data['weights'],
                                       x_conf['bins'], x_min, x_max,
                                       y_conf['bins'], y_min, y_max, name)
+        if not self._hist_has_content(hist):
+            print(f"  Warning: No entries for 2D plot {name} (x_var={x_var}, y_var={y_var})")
+            return None, None
 
         canvas = CMS.cmsCanvas(name, x_min, x_max, y_min, y_max, x_label, y_label,
                               square=False, extraSpace=0.01, iPos=0, with_z_axis=True)
@@ -639,6 +680,8 @@ class PlotterDataMC(PlotterBase):
             weights_to_use = data.get(var_weights_key, data.get('weights', []))
 
             h = self.create_histogram(values, weights_to_use, bins, x_min, x_max, filename, color=color)
+            if not self._hist_has_content(h):
+                continue
 
             bg_name = self._clean_mc_label(parse_background_name(filename))
             mc_histograms.append((h, bg_name))
@@ -677,13 +720,16 @@ class PlotterDataMC(PlotterBase):
                 var_weights_key = f'{mapped_var}_weights'
                 weights_to_use = combined_data.get(var_weights_key, combined_data.get('weights', []))
                 data_hist = self.create_histogram(combined_data[mapped_var], weights_to_use, bins, x_min, x_max, "data", color=self.data_color)
-                data_hist.SetMarkerStyle(20)
-                data_hist.SetMarkerSize(self.style.data_marker_size)
-                data_hist.SetLineWidth(self.style.data_line_width)
-                
-                # Normalize data if requested
-                if normalized and data_hist.Integral() > 0:
-                    data_hist.Scale(1.0 / data_hist.Integral())
+                if not self._hist_has_content(data_hist):
+                    data_hist = None
+                else:
+                    data_hist.SetMarkerStyle(20)
+                    data_hist.SetMarkerSize(self.style.data_marker_size)
+                    data_hist.SetLineWidth(self.style.data_line_width)
+
+                    # Normalize data if requested
+                    if normalized and data_hist.Integral() > 0:
+                        data_hist.Scale(1.0 / data_hist.Integral())
         
         # Set axis ranges
         data_max = data_hist.GetMaximum() if data_hist else 0
@@ -915,10 +961,14 @@ class PlotterDataMC(PlotterBase):
         # --- 1. Process MC Data ---
         mc_histograms = []
         for filename, data in mc_collection.items():
+            if not all(k in data and len(data[k]) > 0 for k in ('rjr_Ms', 'rjr_Rs', 'weights')):
+                continue
             # Calculate 3x3 yields
             y2d, e2d = unroller.calculate_2d_yields(data['rjr_Ms'], data['rjr_Rs'], data['weights'])
             # Unroll
             y1d, e1d, bin_labels, decorations = unroller.unroll(y2d, e2d)
+            if np.sum(y1d) == 0:
+                continue
             
             # Create Histogram - create empty histogram and set bin contents directly
             color = self._get_background_color_index(filename)
@@ -940,6 +990,8 @@ class PlotterDataMC(PlotterBase):
             h.SetLineColor(ROOT.kBlack)
             h.SetLineWidth(1)
             h.SetStats(0)
+            if h.Integral() == 0:
+                continue
             
             bg_name = self._clean_mc_label(parse_background_name(filename))
             mc_histograms.append((h, bg_name))
@@ -951,30 +1003,37 @@ class PlotterDataMC(PlotterBase):
         data_hist = None
         if not blind_data and data_collection:
             combined_data = self._combine_data_collections(data_collection)
-            if combined_data:
+            if combined_data and all(k in combined_data and len(combined_data[k]) > 0 for k in ('rjr_Ms', 'rjr_Rs', 'weights')):
                 y2d, e2d = unroller.calculate_2d_yields(combined_data['rjr_Ms'], combined_data['rjr_Rs'], combined_data['weights'])
                 y1d, e1d, bin_labels, decorations = unroller.unroll(y2d, e2d)
+                if np.sum(y1d) == 0:
+                    data_hist = None
+                else:
                 
-                nbins = len(y1d)
+                    nbins = len(y1d)
                 
-                # Create empty data histogram and set bin contents directly  
-                name = f"h_unrolled_data_{np.random.randint(0, 10000)}"
-                data_hist = ROOT.TH1F(name, "data", nbins, 0, nbins)
-                data_hist.SetDirectory(0)
-                data_hist.Sumw2()
+                    # Create empty data histogram and set bin contents directly
+                    name = f"h_unrolled_data_{np.random.randint(0, 10000)}"
+                    data_hist = ROOT.TH1F(name, "data", nbins, 0, nbins)
+                    data_hist.SetDirectory(0)
+                    data_hist.Sumw2()
                 
-                # Set bin contents and errors directly from unrolled yields
-                for i in range(nbins):
-                    data_hist.SetBinContent(i+1, y1d[i])
-                    data_hist.SetBinError(i+1, e1d[i])
+                    # Set bin contents and errors directly from unrolled yields
+                    for i in range(nbins):
+                        data_hist.SetBinContent(i+1, y1d[i])
+                        data_hist.SetBinError(i+1, e1d[i])
                 
-                # Set data styling
-                data_hist.SetLineColor(self.data_color)
-                data_hist.SetMarkerColor(self.data_color)
+                    # Set data styling
+                    data_hist.SetLineColor(self.data_color)
+                    data_hist.SetMarkerColor(self.data_color)
                 
-                data_hist.SetMarkerStyle(20)
-                data_hist.SetMarkerSize(self.style.data_marker_size)
-                data_hist.SetLineWidth(self.style.data_line_width)
+                    data_hist.SetMarkerStyle(20)
+                    data_hist.SetMarkerSize(self.style.data_marker_size)
+                    data_hist.SetLineWidth(self.style.data_line_width)
+
+        if not mc_histograms and data_hist is None:
+            print(f"  Warning: No entries for unrolled plot {scheme} in {suffix}; skipping.")
+            return None
 
         # --- 3. Normalization ---
         if normalized:

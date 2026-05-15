@@ -188,6 +188,9 @@ def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path=
     If save_hists=True (ROOT format only), also writes each histogram as a
     standalone object alongside the canvas.
     """
+    if canvas is None:
+        return
+
     if output_format == 'root':
         if f_out is not None:
             canvas.Write()
@@ -488,6 +491,8 @@ def main():
     # Call sites are unchanged — they still pass (canvas, fmt, fout, outdir, ...) but
     # this wrapper ignores those args and uses the closure-captured format list instead.
     def save_canvas(canvas, _fmt, _fout, _outdir, subdir="", cname=None):  # noqa: F811
+        if canvas is None:
+            return
         for fmt in output_formats:
             _save_canvas_impl(canvas, fmt,
                               f_out if fmt == 'root' else None,
@@ -742,7 +747,8 @@ def main():
                     suffix=f"{flag}_{scheme}",
                     normalized=False
                 )
-                save_canvas(canvas, output_format, f_out, output_dir, unrolled_subdir)
+                if canvas:
+                    save_canvas(canvas, output_format, f_out, output_dir, unrolled_subdir)
 
                 if use_root_file:
                     fs_dir.cd()
@@ -760,7 +766,8 @@ def main():
                         suffix=f"{flag}_{scheme}",
                         normalized=True
                     )
-                    save_canvas(canvas_norm, output_format, f_out, output_dir, unrolled_norm_subdir)
+                    if canvas_norm:
+                        save_canvas(canvas_norm, output_format, f_out, output_dir, unrolled_norm_subdir)
 
                     if use_root_file:
                         fs_dir.cd()
@@ -876,17 +883,20 @@ def main():
                 # 1. All Signals
                 if current_sig_data:
                     c_sig = plotter1d.plot_collection(current_sig_data, short_name, label, nbins, xmin, xmax, collection_type="Signal", normalized=args.normalize, suffix=flag, final_state_label=fs_label_latex)
-                    save_canvas(c_sig, output_format, f_out, output_dir, plots_1d_subdir)
+                    if c_sig:
+                        save_canvas(c_sig, output_format, f_out, output_dir, plots_1d_subdir)
                 
                 # 2. All Backgrounds
                 if current_bg_data:
                     c_bg = plotter1d.plot_collection(current_bg_data, short_name, label, nbins, xmin, xmax, collection_type="Background", normalized=args.normalize, suffix=flag, final_state_label=fs_label_latex)
-                    save_canvas(c_bg, output_format, f_out, output_dir, plots_1d_subdir)
+                    if c_bg:
+                        save_canvas(c_bg, output_format, f_out, output_dir, plots_1d_subdir)
                     
                 # 3. Signal vs Net Background
                 if current_sig_data and current_bg_combined:
                     c_comp, _, _ = plotter1d.plot_signals_vs_net_background(current_sig_data, current_bg_combined, short_name, label, nbins, xmin, xmax, args.normalize, suffix=flag, final_state_label=fs_label_latex)
-                    save_canvas(c_comp, output_format, f_out, output_dir, plots_1d_subdir)
+                    if c_comp:
+                        save_canvas(c_comp, output_format, f_out, output_dir, plots_1d_subdir)
                     
             # Return to parent directory
             if use_root_file:
@@ -926,7 +936,8 @@ def main():
                         cr_label=cr_label, suffix=flag,
                         final_state_label=fs_label_latex
                     )
-                    save_canvas(canvas, output_format, f_out, output_dir, cr_sig_subdir)
+                    if canvas:
+                        save_canvas(canvas, output_format, f_out, output_dir, cr_sig_subdir)
 
                 if use_root_file:
                     fs_dir.cd()

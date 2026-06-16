@@ -334,7 +334,7 @@ def main():
         if not args.data:
             data_groups = config['data_groups']
 
-    if not args.signal:
+    if not args.signal and not args.input_config:
         print("Error: --signal is required when not using --input-config.")
         sys.exit(1)
 

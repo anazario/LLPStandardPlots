@@ -58,7 +58,8 @@ COMPRESSED_FINAL_RISR_LABELS = {
     "SVonly":    {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
     "DelPho":    {"10": "med", "00": "hi",  "20": "hi", "30": "hi+"},
     "Eq2Pho":    {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
-    "MixDel":    {"10": "med", "00": "hi",  "20": "hi", "30": "hi+"},
+    "MixDel":     {"10": "med", "00": "hi",  "20": "hi", "30": "hi+"},  # ABCD
+    "MixDel_STF": {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},  # shape_transfer
     "MixPrompt": {"00": "lo",  "10": "med", "20": "hi", "30": "hi+"},
 }
 
@@ -375,8 +376,12 @@ class FitPlotter:
 
         # ── ABCD plots (uncompressed only) ────────────────────────────────────
         if cfg.abcd_bin_order:
-            # Single-bin ABCD cells (compressed) use compact R_ISR label; multi-bin uses Ms
-            abcd_scheme = "ms_delayed" if max(len(b) for _, b in cfg.abcd_bin_order) > 1 else "abcd"
+            multi_bin_abcd = max(len(b) for _, b in cfg.abcd_bin_order) > 1
+            if cfg.mode == "uncompressed":
+                abcd_scheme = "ms_delayed" if multi_bin_abcd else "abcd"
+            else:
+                # Compressed multi-bin ABCD cells carry R_ISR bins, not M_S bins
+                abcd_scheme = "risr" if multi_bin_abcd else "abcd"
             if use_cf_labels:
                 abcd_flat_deco = self._build_compressed_final_decorations(cfg.abcd_bin_order)
             elif use_ncf_labels:
@@ -395,7 +400,7 @@ class FitPlotter:
             elif use_ncf_labels:
                 abcd_grid_deco = self._build_noncompressed_final_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
             else:
-                abcd_grid_deco = self._build_abcd_grid_decorations(cfg.abcd_bin_order, sr_ch=sr_ch)
+                abcd_grid_deco = self._build_abcd_grid_decorations(cfg.abcd_bin_order, sr_ch=sr_ch, mode=cfg.mode)
             plots.append((
                 self._draw_datamc_canvas(pre_abcd_stack, abcd_grid_deco, f"abg_pre_{_uid()}", "Prefit") if data_mc else self._draw_standard_canvas(*pre_abcd,  abcd_grid_deco, f"abg_pre_{_uid()}",  "Prefit"),
                 self._draw_datamc_canvas(post_abcd_stack, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit") if data_mc else self._draw_standard_canvas(*post_abcd, abcd_grid_deco, f"abg_pst_{_uid()}", "Postfit"),
@@ -776,8 +781,11 @@ class FitPlotter:
                     current_leaf = leaf
 
                 suf = bin_name[-2:]
+                risr_key = family
+                if family == "MixDel" and not any(t in bin_name for t in ("BHEarly", "BHLate", "NotBH")):
+                    risr_key = "MixDel_STF"
                 bin_labels.append(
-                    COMPRESSED_FINAL_RISR_LABELS.get(family, {}).get(suf, RISR_COMPACT_LABELS.get(suf, suf))
+                    COMPRESSED_FINAL_RISR_LABELS.get(risr_key, {}).get(suf, RISR_COMPACT_LABELS.get(suf, suf))
                 )
                 if sr_ch and "SR" in bin_name:
                     sr_bins.append(cursor)
@@ -857,9 +865,10 @@ class FitPlotter:
             if "NotBHLate" in stem:
                 return "!BH+"
             if "AnchorCR" in stem:
-                return "Anch CR"
+                return "Anchor CR"
             if stem.endswith("CR"):
-                return "#gamma_{d}+SV CR" if family == "MixDel" else "Delayed CR"
+                # shape_transfer buoy bin: has "CR" in name but is the SR-side bin
+                return "#gamma_{d}+SV SR" if family == "MixDel" else "Delayed CR"
             if stem.endswith("SR"):
                 return "#gamma_{d}+SV SR" if family == "MixDel" else "Delayed SR"
 
@@ -997,15 +1006,18 @@ class FitPlotter:
             "sr_bins":             sr_bins,
         }
 
-    def _build_abcd_grid_decorations(self, abcd_bin_order, sr_ch=None):
+    def _build_abcd_grid_decorations(self, abcd_bin_order, sr_ch=None, mode="uncompressed"):
         """
         3-level decoration for the ABCD 2×2 grid layout:
           Level 1 (group_labels):     BH γ  |  Non-BH γ
           Level 2 (sub_group_labels): Early | Late  (within each major group)
-          Level 3 (bin_labels):       Ms-delayed ranges
+          Level 3 (bin_labels):       Ms-delayed ranges (uncompressed) or R_ISR (compressed)
         """
         bh_chs    = [(ch, b) for ch, b in abcd_bin_order if "notBH" not in ch and "BH" in ch]
         notbh_chs = [(ch, b) for ch, b in abcd_bin_order if "notBH" in ch]
+
+        bin_label_table = MS_DELAYED_LABELS if mode == "uncompressed" else RISR_COMPACT_LABELS
+        x_title = "M_{S} [TeV]" if mode == "uncompressed" else "R_{ISR}"
 
         bin_labels       = []
         group_labels     = []
@@ -1023,7 +1035,7 @@ class FitPlotter:
                 ch_start = cursor
                 timing   = "Early" if "Early" in ch else "Late"
                 for bin_name in bins:
-                    bin_labels.append(MS_DELAYED_LABELS.get(bin_name[-2:], bin_name[-2:]))
+                    bin_labels.append(bin_label_table.get(bin_name[-2:], bin_name[-2:]))
                     if sr_ch and "SR" in bin_name:
                         sr_bins.append(cursor)
                     cursor += 1
@@ -1044,7 +1056,7 @@ class FitPlotter:
             "sub_sep_bins":     sub_sep_bins,
             "section_labels":      None,
             "section_separator":   None,
-            "x_axis_title":        "M_{S} [TeV]",
+            "x_axis_title":        x_title,
             "sub_group_axis_title": "",
             "bottom_margin":       0.52,
             "sr_bins":             sr_bins,

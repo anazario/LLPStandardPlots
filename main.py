@@ -13,7 +13,7 @@ import glob
 from src.style import StyleManager
 from src.loader import DataLoader
 from src.plotter import Plotter1D, Plotter2D, PlotterDataMC
-from src.selections import FinalStateResolver
+from src.selections import FinalStateResolver, is_blinded_selection
 from src.utils import parse_signal_name, parse_background_name
 
 from src.config import AnalysisConfig, AnalysisMode, ModeConfig
@@ -216,14 +216,9 @@ def is_event_flag(flag_string):
     """Check if the string is a predefined event flag (starts with 'pass') or a custom cut."""
     return flag_string.startswith('pass')
 
-def is_signal_region(flag_string):
-    """Check if the flag represents a signal region (data should be blinded)."""
-    # SR = Signal Region (blind data), CR = Control Region (show data)
-    return 'SR' in flag_string
-
 def _is_sv_region(flag):
-    """Return True for any SV-based selection flag (hadronic or leptonic)."""
-    return "NHad" in flag or "NLep" in flag
+    """Return True for any SV-based selection flag (hadronic, leptonic or inclusive)."""
+    return "NHad" in flag or "NLep" in flag or ("NSV" in flag and "NSVEq0" not in flag)
 
 def _merge_qcd_gjets(bg_data, combine_fn):
     """Merge GJets entries into QCD for SV region plots.
@@ -266,8 +261,8 @@ def parse_arguments():
     
     # Selections
     parser.add_argument('--flags', nargs='+', default=[
-        'passNHad1SelectionSRTight',
-        'passNLep1SelectionSRTight'
+        'passNHadGe1SelectionHighDxySigSR',
+        'passNLepGe1SelectionHighDxySigSR'
     ], help='List of Final State Flags or custom cut strings to process')
     
     # Plot Types
@@ -296,7 +291,7 @@ def parse_arguments():
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
     parser.add_argument('--data-flag', default=None,
                        help='Flag used to load data files for CR-vs-SR overlay plots '
-                            '(e.g. passNPhoGe1SelectionPromptLooseNotTightIsoCR). '
+                            '(e.g. passNPhoEq1SelectionPromptMedIsoCR). '
                             'Data is loaded with this flag independently of --flags.')
     parser.add_argument('--labels', nargs='+', default=None,
                        help='Custom labels for custom cut regions (1:1 with non-event-flag entries in --flags)')
@@ -430,12 +425,13 @@ def main():
     event_flags = [flag for flag in args.flags if is_event_flag(flag)]
     custom_cuts = [flag for flag in args.flags if not is_event_flag(flag)]
 
-    # Build per-custom-cut blind list from YAML (default all False)
+    # Build per-custom-cut blind list: explicit 'blind: true' from YAML, or any
+    # cut whose selection flags define a signal region. Only --unblind overrides.
     blind_cuts_all = getattr(args, 'blind_cuts', None) or [False] * len(args.flags)
     if len(blind_cuts_all) < len(args.flags):
         blind_cuts_all += [False] * (len(args.flags) - len(blind_cuts_all))
-    custom_blind_cuts = [blind_cuts_all[i] for i, f in enumerate(args.flags)
-                         if not is_event_flag(f)]
+    custom_blind_cuts = [not args.unblind and (blind_cuts_all[i] or is_blinded_selection(f))
+                         for i, f in enumerate(args.flags) if not is_event_flag(f)]
 
     # Map original custom-cut index → data CustomRegion name; None = blinded (never loaded)
     _di = 0
@@ -527,7 +523,8 @@ def main():
             'region_type': region_type,
             'sig_data': sig_data_map.get(flag, {}),
             'bg_data': bg_data_map.get(flag, {}),
-            'show_region_label': True
+            'show_region_label': True,
+            'blind_data': not args.unblind and is_blinded_selection(flag),
         })
 
     # Add custom cuts
@@ -625,7 +622,7 @@ def main():
             if args.unblind:
                 blind_data = False  # Override blinding if --unblind flag is set
             else:
-                blind_data = is_signal_region(flag) or item.get('blind_data', False)
+                blind_data = item['blind_data']
             
             # Determine variable set based on final state (like datamc_batch_process.py)
             datamc_vars = []
@@ -733,7 +730,7 @@ def main():
             if args.unblind:
                 blind_data = False
             else:
-                blind_data = is_signal_region(flag) or item.get('blind_data', False)
+                blind_data = item['blind_data']
 
             # Create directories once before the loop
             if use_root_file:
@@ -842,7 +839,7 @@ def main():
                 # 1. Current flag (CR only): data loaded under the same flag as signal/bg
                 # 2. --data-flag CR collection (if provided and different from current flag)
                 data_2d_cases = []
-                if current_data_data and not (is_signal_region(flag) or item.get('blind_data', False)):
+                if current_data_data and not item['blind_data']:
                     data_2d_cases.append((
                         current_data_data, fs_label_latex,
                         f"data_2d_{flag}_{suffix}"
@@ -907,7 +904,14 @@ def main():
                     c_comp, _, _ = plotter1d.plot_signals_vs_net_background(current_sig_data, current_bg_combined, short_name, label, nbins, xmin, xmax, args.normalize, suffix=flag, final_state_label=fs_label_latex)
                     if c_comp:
                         save_canvas(c_comp, output_format, f_out, output_dir, plots_1d_subdir)
-                    
+
+                # 4. Data (CR only — skip blinded regions)
+                _blind_1d = item['blind_data']
+                if current_data_data and not _blind_1d:
+                    c_data = plotter1d.plot_collection(current_data_data, short_name, label, nbins, xmin, xmax, collection_type="Data", normalized=args.normalize, suffix=flag, final_state_label=fs_label_latex)
+                    if c_data:
+                        save_canvas(c_data, output_format, f_out, output_dir, plots_1d_subdir)
+
             # Return to parent directory
             if use_root_file:
                 fs_dir.cd()

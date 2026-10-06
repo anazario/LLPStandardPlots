@@ -1,204 +1,247 @@
 import re
 
+
+# ---------------------------------------------------------------------------- #
+# Region classification / blinding                                              #
+# ---------------------------------------------------------------------------- #
+# Skimmer selection flags follow the naming convention (see KUCMSSkimmer
+# src/KUCMSAodSkimmer_SV.cc and src/KUCMSAodSkimmer_Photons.cc):
+#   ...SR             signal region               (blind)
+#   ...CR             control region              (unblind)
+#   ...ValSR/ValCR    validation region, always a CR by construction (unblind)
+#   no suffix         inclusive selection that overlaps the SRs, e.g.
+#                     passNSVGe1Selection, passNSVEq0Selection,
+#                     passNPhoGe1NonPrompt, passNPhoGe1SelectionLateSignal
+# A region is the AND of the flags it requires; it is blinded when it requires
+# an SR flag, or when it requires an inclusive flag without also requiring a CR
+# flag (e.g. LateSignal alone overlaps the delayed-photon SR, while
+# LowDxySigCR + LateSignal is the MixDel anchor CR). Vetoed flags (== 0) never
+# make a region an SR.
+
+FLAG_SR = 'sr'
+FLAG_CR = 'cr'
+FLAG_INCLUSIVE = 'inclusive'
+
+_FLAG_TOKEN_RE = re.compile(
+    r'(!\s*)?\b(pass\w+)\b(?:\s*(==|!=|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?))?')
+
+
+def classify_selection_flag(flag):
+    """Return FLAG_SR, FLAG_CR or FLAG_INCLUSIVE for a skimmer selection flag."""
+    if re.search(r'Val(SR|CR)', flag):
+        return FLAG_CR
+    if 'SR' in flag:
+        return FLAG_SR
+    if 'CR' in flag:
+        return FLAG_CR
+    return FLAG_INCLUSIVE
+
+
+def _required_flags_in_cut(cut_string):
+    """Return the selection flags a custom cut string requires to be true."""
+    required = []
+    for negated, flag, op, value in _FLAG_TOKEN_RE.findall(cut_string):
+        if op:
+            value = float(value)
+            requires = ((op == '==' and value == 1) or (op == '!=' and value == 0) or
+                        (op == '>=' and value == 1) or (op == '>' and value == 0))
+        else:
+            requires = True
+        if negated:
+            requires = not requires
+        if requires:
+            required.append(flag)
+    return required
+
+
+def _and_group_is_blinded(flags):
+    kinds = {classify_selection_flag(flag) for flag in flags}
+    if FLAG_SR in kinds:
+        return True
+    return FLAG_INCLUSIVE in kinds and FLAG_CR not in kinds
+
+
+def _split_top_level(expr, op):
+    """Split expr on the single-character operator op outside parentheses."""
+    parts, depth, current = [], 0, []
+    for ch in expr:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if ch == op and depth == 0:
+            parts.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append(''.join(current))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _strip_outer_parens(expr):
+    expr = expr.strip()
+    while expr.startswith('(') and expr.endswith(')'):
+        depth = 0
+        for i, ch in enumerate(expr):
+            depth += (ch == '(') - (ch == ')')
+            if depth == 0 and i < len(expr) - 1:
+                return expr
+        expr = expr[1:-1].strip()
+    return expr
+
+
+def _cut_and_groups(expr):
+    """Expand a cut string into its OR of AND-groups of required flags."""
+    expr = _strip_outer_parens(expr)
+    or_parts = _split_top_level(expr, '|')
+    if len(or_parts) > 1:
+        return [group for part in or_parts for group in _cut_and_groups(part)]
+    and_parts = _split_top_level(expr, '&')
+    if len(and_parts) > 1:
+        groups = [[]]
+        for part in and_parts:
+            groups = [a + b for a in groups for b in _cut_and_groups(part)]
+        return groups
+    if expr.startswith('!') and _strip_outer_parens(expr[1:]) != expr[1:].strip():
+        return [[]]  # negated sub-expression: a veto never requires a flag
+    return [_required_flags_in_cut(expr)]
+
+
+def is_blinded_selection(selection):
+    """
+    Decide whether data must be blinded for an event-flag expression
+    ('A+B|C', '+' = AND, '|' = OR) or a custom cut string.
+
+    The selection is expanded into an OR of AND-groups of required flags and
+    is blinded if any group is. Custom cuts that reference no selection flags
+    are not blinded here; use 'blind: true' in the input config for those.
+    """
+    if selection.startswith('pass'):
+        return any(
+            _and_group_is_blinded([f.strip() for f in or_part.split('+')])
+            for or_part in selection.split('|')
+        )
+
+    normalized = selection.replace('&&', '&').replace('||', '|')
+    return any(_and_group_is_blinded(group) for group in _cut_and_groups(normalized))
+
+
 class FinalStateResolver:
     """Resolves final state flags to LaTeX labels."""
-    
-    # Ordered photon region keyword → compact LaTeX label.
-    # Checked most-specific first so e.g. "EarlyBeamHalo" matches before "BeamHalo".
+
+    # Ordered photon keyword -> (timing subscript, descriptors). Checked most
+    # specific first so e.g. "LateNotBHTightIso" matches before "LateNotBH".
     _PHOTON_REGION_MAP = [
-        ('EarlyBeamHalo',          '#gamma_{t-}^{CR, BH}'),
-        ('LateBeamHalo',           '#gamma_{t+}^{CR, BH}'),
-        ('BeamHalo',               '#gamma_{t0}^{CR, BH}'),
-        ('EarlyNotBH',             '#gamma_{t-}^{CR, !BH}'),
-        ('LateNotBH',              '#gamma_{t+}^{SR, !BH}'),
-        ('NotBHPrompt',            '#gamma_{t0}^{CR, !BH}'),
-        ('NotBH',                  '#gamma^{CR, !BH}'),
-        ('PromptLooseNotTightIso1','#gamma_{t0}^{CR, L!T iso, 1}'),
-        ('PromptLooseNotTightIso2','#gamma_{t0}^{CR, L!T iso, 2}'),
-        ('PromptLooseNotTightIso', '#gamma_{t0}^{CR, L!T iso}'),
-        ('PromptTightIso',         '#gamma_{t0}^{SR, tight iso}'),
+        ('EarlyBeamHalo',     't-',   ['BH']),
+        ('LateBeamHalo',      't+',   ['BH']),
+        ('BeamHalo',          '',     ['BH']),
+        ('EarlyNotBH',        't-',   ['!BH']),
+        ('LateNotBHTightIso', 't+',   ['!BH', 'tight iso']),
+        ('LateSignal',        't+',   ['!BH', 'tight iso']),
+        ('EarlyMedIso',       't-',   ['med iso']),
+        ('LateMedIso',        't+',   ['med iso']),
+        ('EarlyTightIso',     't-',   ['tight iso']),
+        ('PromptMedIso',      't0',   ['med iso']),
+        ('PromptTightIso',    't0',   ['tight iso']),
+        ('NonPrompt',         't#pm', []),
     ]
+
+    _SV_DXYSIG_BANDS = [
+        ('LowDxySig',  'low d_{xy}/#sigma'),
+        ('MidDxySig',  'mid d_{xy}/#sigma'),
+        ('HighDxySig', 'high d_{xy}/#sigma'),
+    ]
+
+    @staticmethod
+    def _region_tag(flag):
+        """SR/CR/VR tag for a flag, or '' for inclusive selections."""
+        if re.search(r'Val(SR|CR)', flag):
+            return 'VR'
+        kind = classify_selection_flag(flag)
+        if kind == FLAG_SR:
+            return 'SR'
+        if kind == FLAG_CR:
+            return 'CR'
+        return ''
+
+    @staticmethod
+    def _photon_label(flag):
+        count = "2" if "NPhoEq2" in flag else ""
+        timing, descriptors = '', []
+        for keyword, kw_timing, kw_descriptors in FinalStateResolver._PHOTON_REGION_MAP:
+            if keyword in flag:
+                timing, descriptors = kw_timing, kw_descriptors
+                break
+        tags = [t for t in [FinalStateResolver._region_tag(flag)] + descriptors if t]
+        sub = f"_{{{timing}}}" if timing else ""
+        sup = f"^{{{', '.join(tags)}}}" if tags else ""
+        return f"{count}#gamma{sub}{sup}"
+
+    @staticmethod
+    def _sv_label(flag):
+        if "NSVEq0" in flag:
+            return "0SV"
+        if "NHad" in flag and "NLep" not in flag:
+            flavor = "_{hh}"
+        elif "NLep" in flag and "NHad" not in flag:
+            flavor = "_{\\ell\\ell}"
+        else:
+            flavor = ""
+        count_match = re.search(r'N(?:SV|Had|Lep)(?:Ge|Eq)?(\d+)', flag)
+        count = "2" if count_match and int(count_match.group(1)) >= 2 else ""
+
+        tags = [FinalStateResolver._region_tag(flag)]
+        for keyword, band_label in FinalStateResolver._SV_DXYSIG_BANDS:
+            if keyword in flag:
+                tags.append(band_label)
+                break
+        tags = [t for t in tags if t]
+        sup = f"^{{{', '.join(tags)}}}" if tags else ""
+        return f"{count}SV{flavor}{sup}"
 
     @staticmethod
     def format_sv_label(final_state: str) -> str:
         """
-        Format final state labels for SV-based and photon-based selections.
+        Format final state labels for SV- and photon-based selection flags.
 
-        SV convention: {N}SV_{flavor}^{selection}
-          - N: shown only for ≥2 SVs
-          - flavor: 'hh' (hadronic) or '\\ell\\ell' (leptonic)
-          - selection: CR/SR + L/T
+        '|' (OR) and '+' (AND) combinations are labelled part by part.
 
-        Photon convention: {N}<region_label>
-          - Region label encodes timing and BH/!BH info (see _PHOTON_REGION_MAP)
-          - N: "2" prefix for NPhoEq2, empty otherwise
-
-        Mixed photon+SV: {N}<photon_region> + {sv_count}SV_{flavor}
-
-        SV examples:
-          passNHad1SelectionSRLoose         -> Region: SV_{hh}^{SR,L}
-          passNLep1SelectionSRTight         -> Region: SV_{\\ell\\ell}^{SR,T}
-          passNHad2SelectionCRLoose         -> Region: 2SV_{hh}^{CR,L}
-          passNLepNHadSelectionSRTight      -> Region: SV_{\\ell\\ell}SV_{hh}^{SR,T}
-
-        Photon examples:
-          passNPhoEq1SelectionEarlyBeamHaloCR    -> Region: #gamma_{t-}^{CR, BH}
-          passNPhoEq2SelectionLateNotBHSR        -> Region: 2#gamma_{t+}^{SR, !BH}
-          passNPhoGe1SelectionPromptTightIsoSR   -> Region: #gamma_{t0}^{SR, tight iso}
-          passNPhoEq1SelectionNotBHCR            -> Region: #gamma^{CR, !BH}
+        Examples:
+          passNHadGe1SelectionHighDxySigSR     -> Region: SV_{hh}^{SR, high d_{xy}/#sigma}
+          passNSVGe1SelectionLowDxySigValCR    -> Region: SV^{VR, low d_{xy}/#sigma}
+          passNPhoGe1SelectionEarlyBeamHaloCR  -> Region: #gamma_{t-}^{CR, BH}
+          passNPhoEq2SelectionPromptTightIsoSR -> Region: 2#gamma_{t0}^{SR, tight iso}
+          passNSVGe1SelectionLowDxySigCR+passNPhoGe1SelectionLateSignal
+              -> Region: SV^{CR, low d_{xy}/#sigma} + #gamma_{t+}^{!BH, tight iso}
         """
-
-        # ------------------------------------------------------------------ #
-        # OR-combined flags: label each part and join with ' | '              #
-        # ------------------------------------------------------------------ #
-        if '|' in final_state:
-            parts = [FinalStateResolver.format_sv_label(p.strip()) for p in final_state.split('|')]
-            # Keep "Region: " prefix from the first part only
-            return parts[0] + ''.join(' | ' + p.replace('Region: ', '') for p in parts[1:])
-
-        # ------------------------------------------------------------------ #
-        # Photon path                                                          #
-        # ------------------------------------------------------------------ #
-        if "NPho" in final_state:
-            # Multiplicity prefix: "2" for NPhoEq2, empty for Eq1/Ge1
-            pho_count = "2" if "NPhoEq2" in final_state else ""
-
-            # Resolve photon region label (most-specific keyword wins)
-            pho_region = None
-            for keyword, label in FinalStateResolver._PHOTON_REGION_MAP:
-                if keyword in final_state:
-                    pho_region = label
-                    break
-            # Fallback: no photon-specific region keyword found; use SV-style region suffix
-            if pho_region is None:
-                if "CR" in final_state:
-                    sel = "CR,L" if "Loose" in final_state else "CR,T"
-                elif "SR" in final_state:
-                    sel = "SR,L" if "Loose" in final_state else "SR,T"
+        or_labels = []
+        for or_part in final_state.split('|'):
+            and_labels = []
+            for flag in (f.strip() for f in or_part.split('+')):
+                if "NPho" in flag:
+                    and_labels.append(FinalStateResolver._photon_label(flag))
                 else:
-                    sel = ""
-                pho_region = f"#gamma^{{{sel}}}" if sel else "#gamma"
+                    and_labels.append(FinalStateResolver._sv_label(flag))
+            or_labels.append(' + '.join(and_labels))
+        return "Region: " + ' | '.join(or_labels)
 
-            # Optional SV component (mixed photon+SV flags)
-            # Parse CR/SR and L/T from the substring *after* the NHad/NLep
-            # token so we don't accidentally pick up the photon region's keyword.
-            sv_part = ""
-            if "NHad" in final_state:
-                sv_count = ""
-                had_match = re.search(r'NHad(\d+)', final_state)
-                if had_match and int(had_match.group(1)) >= 2:
-                    sv_count = "2"
-                sv_suffix = final_state[had_match.start():]
-                if "CR" in sv_suffix:
-                    sv_sel = "CR,L" if "Loose" in sv_suffix else "CR,T"
-                elif "SR" in sv_suffix:
-                    sv_sel = "SR,L" if "Loose" in sv_suffix else "SR,T"
-                else:
-                    sv_sel = ""
-                sv_sel_str = f"^{{{sv_sel}}}" if sv_sel else ""
-                sv_part = f" + {sv_count}SV_{{hh}}{sv_sel_str}"
-            elif "NLep" in final_state:
-                sv_count = ""
-                lep_match = re.search(r'NLep(\d+)', final_state)
-                if lep_match and int(lep_match.group(1)) >= 2:
-                    sv_count = "2"
-                sv_suffix = final_state[lep_match.start():]
-                if "CR" in sv_suffix:
-                    sv_sel = "CR,L" if "Loose" in sv_suffix else "CR,T"
-                elif "SR" in sv_suffix:
-                    sv_sel = "SR,L" if "Loose" in sv_suffix else "SR,T"
-                else:
-                    sv_sel = ""
-                sv_sel_str = f"^{{{sv_sel}}}" if sv_sel else ""
-                sv_part = f" + {sv_count}SV_{{\\ell\\ell}}{sv_sel_str}"
-
-            return f"Region: {pho_count}{pho_region}{sv_part}"
-
-        # ------------------------------------------------------------------ #
-        # SV path (original logic preserved exactly)                           #
-        # ------------------------------------------------------------------ #
-        count = ""
-        flavor = "hh"  # default to hadronic
-        selection = "SR,T"  # default to signal region tight
-
-        if "HadAndLep" in final_state or "LepAndHad" in final_state:
-            if "CR" in final_state:
-                selection = "CR,L" if "Loose" in final_state else "CR,T"
-            elif "SR" in final_state:
-                selection = "SR,L" if "Loose" in final_state else "SR,T"
-            return f"Region: SV_{{\\ell\\ell}}SV_{{hh}}^{{{selection}}}"
-
-        elif "NHad" in final_state:
-            flavor = "hh"
-            if "HadGe2" in final_state:
-                count = "2"
-            else:
-                had_match = re.search(r'NHad(\d+)', final_state)
-                if had_match and int(had_match.group(1)) >= 2:
-                    count = "2"
-
-        elif "NLep" in final_state:
-            flavor = "\\ell\\ell"
-            if "LepGe2" in final_state:
-                count = "2"
-            else:
-                lep_match = re.search(r'NLep(\d+)', final_state)
-                if lep_match and int(lep_match.group(1)) >= 2:
-                    count = "2"
-
-        if "CR" in final_state:
-            selection = "CR,L" if "Loose" in final_state else "CR,T"
-        elif "SR" in final_state:
-            selection = "SR,L" if "Loose" in final_state else "SR,T"
-
-        return f"Region: {count}SV_{{{flavor}}}^{{{selection}}}"
-
-    @staticmethod
-    def get_active_flag(tree_branches):
-        """
-        Scans tree branches to find the active 'pass...' flag.
-        Returns the flag name and its formatted label.
-        """
-        # This logic assumes only ONE of the relevant flags is true per event
-        # or that we are just looking for the presence of the branch in the file
-        # If this is per-event logic, it needs to be inside the event loop.
-        # If this is "what dataset is this?", we check the branches.
-        
-        # Assuming we are looking for existence of branches for now
-        # or user specifies which flag to filter on.
-        pass 
 
 class SelectionManager:
     """
-    Manages physics selections (Cuts, Filters, Triggers).
+    Manages the baseline event filters and triggers.
     """
     def __init__(self):
-        self.common_cuts = [
-            "selCMet > 150",
-            "rjrPTS < 150"
-        ]
         self.flags = [
             "Flag_MetFilters",
-            "hlt_flags"
             # Add other boolean flags here if they are single branches
         ]
         self.inverted_flags = [
             "Flag_hemVeto"
         ]
-        # HLT fallback expression
-        self.hlt_fallback_expression = "(Trigger_PFMET120_PFMHT120_IDTight || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight || Trigger_PFMET120_PFMHT120_IDTight_PFHT60 || Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60)"
-
-    def get_combined_selection_string(self, final_state_flag: str = None):
-        """Returns a string representation of cuts for uproot.filter/cut."""
-        cuts = list(self.common_cuts)
-        
-        # Add boolean flags (assumed to be == 1)
-        for flag in self.flags:
-            cuts.append(f"({flag} == 1)")
-        for flag in self.inverted_flags:
-            cuts.append(f"({flag} == 0)")
-            
-        if final_state_flag:
-            cuts.append(f"({final_state_flag} == 1)")
-            
-        return " & ".join(cuts)
+        # Baseline trigger requirement: OR of the MET triggers
+        self.hlt_triggers = [
+            "Trigger_PFMET120_PFMHT120_IDTight",
+            "Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight",
+            "Trigger_PFMET120_PFMHT120_IDTight_PFHT60",
+            "Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
+        ]

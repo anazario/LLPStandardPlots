@@ -109,9 +109,10 @@ class DataLoader:
         print(f"    • Files processed: {self.loading_summary['files_processed']}")
 
         # Show baseline cuts (mode-aware)
-        baseline_cuts = ["selCMet > 150", "evtFillWgt < 10"]
+        baseline_cuts = [f"selCMet > {AnalysisConfig.MET_CUT:.0f}", f"evtFillWgt < {AnalysisConfig.EVT_WGT_CUT:.0f}"]
         baseline_cuts.extend([f"({flag} == 1)" for flag in self.selection_manager.flags])
         baseline_cuts.extend([f"({flag} == 0)" for flag in self.selection_manager.inverted_flags])
+        baseline_cuts.append("(" + " || ".join(self.selection_manager.hlt_triggers) + ")")
 
         # Add mode-specific cuts
         if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
@@ -130,133 +131,6 @@ class DataLoader:
             print(f"    • Custom cuts: {', '.join(sorted(self.loading_summary['custom_cuts']))}")
         print("=" * 60)
 
-    def load_data(self, file_paths, final_state_flags):
-        """
-        Loads data for multiple files and multiple final states.
-        """
-        self._track_loading(event_flags=final_state_flags, file_count=len(file_paths))
-        # branches to load
-        branches = [
-            'rjr_Ms', 'rjr_Rs', 'evtFillWgt', 'SV_nHadronic', 'SV_nLeptonic',
-            'nSelPhotons', 'selCMet', 'rjrPTS',
-            # SV variables for data/MC comparisons
-            'HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
-            'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
-            'HadronicSV_nTracks',
-            'LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
-            'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta'
-        ]
-        # Add flag branches
-        branches.extend(final_state_flags)
-        branches.extend(self.selection_manager.flags)
-        branches.extend(self.selection_manager.inverted_flags)
-        
-        all_data = {flag: {} for flag in final_state_flags}
-        
-        for file_path in file_paths:
-            if self.verbose:
-                print(f"Loading {file_path}...")
-            try:
-                with uproot.open(file_path) as f:
-                    if self.tree_name not in f:
-                        print(f"  Warning: Tree {self.tree_name} not found in {file_path}")
-                        continue
-                        
-                    tree = f[self.tree_name]
-                    data = tree.arrays(branches, library='np')
-                    
-                    n_events = len(data['evtFillWgt'])
-                    base_mask = np.ones(n_events, dtype=bool)
-                    
-                    # Scalar cuts using Config
-                    base_mask &= (data['selCMet'] > AnalysisConfig.MET_CUT)
-                    base_mask &= (data['evtFillWgt'] < AnalysisConfig.EVT_WGT_CUT)
-                    
-                    # Flag cuts (filters)
-                    for flag in self.selection_manager.flags:
-                        if flag in data:
-                            base_mask &= (data[flag] == 1)
-                        elif flag == 'hlt_flags':
-                            # Try fallback expression for HLT flags
-                            try:
-                                hlt_mask = self._apply_hlt_fallback(tree)
-                                base_mask &= hlt_mask
-                            except Exception:
-                                print(f"  Warning: High-Level Trigger (HLT) not found")
-                        # No warning for other missing flags to keep output clean
-                    for flag in self.selection_manager.inverted_flags:
-                        if flag in data:
-                            base_mask &= (data[flag] == 0)
-                    
-                    for fs_flag in final_state_flags:
-                        if fs_flag not in data:
-                            # print(f"  Warning: Flag {fs_flag} not found in {file_path}")
-                            continue
-                            
-                        combined_mask = base_mask & (data[fs_flag] == 1)
-                        
-                        if np.sum(combined_mask) == 0:
-                            continue
-                            
-                        ms_values = []
-                        rs_values = []
-                        weights = []
-                        
-                        indices = np.where(combined_mask)[0]
-                        
-                        for i in indices:
-                            if (len(data['rjr_Ms'][i]) > 0 and 
-                                len(data['rjr_Rs'][i]) > 0 and 
-                                len(data['rjrPTS'][i]) > 0 and 
-                                data['rjrPTS'][i][0] < AnalysisConfig.RJR_PTS_CUT): 
-                                
-                                # Use Scaling from Config
-                                ms_val = data['rjr_Ms'][i][0] * AnalysisConfig.VARIABLES['rjr_Ms']['scale']
-                                rs_val = data['rjr_Rs'][i][0] * AnalysisConfig.VARIABLES['rjr_Rs']['scale']
-                                
-                                ms_values.append(ms_val)
-                                rs_values.append(rs_val)
-                                weights.append(data['evtFillWgt'][i] * self.luminosity)
-                        
-                        if ms_values:
-                            all_data[fs_flag][file_path] = {
-                                'rjr_Ms': np.array(ms_values),
-                                'rjr_Rs': np.array(rs_values),
-                                'weights': np.array(weights)
-                            }
-                            # print(f"    [{fs_flag}] Loaded {len(ms_values)} events")
-
-            except Exception as e:
-                print(f"Error loading {file_path}: {e}")
-                continue
-                
-        return all_data
-
-    def _apply_hlt_fallback(self, tree):
-        """Apply HLT fallback using individual trigger branches."""
-        try:
-            # Load individual trigger branches
-            trigger_branches = [
-                'Trigger_PFMET120_PFMHT120_IDTight',
-                'Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight', 
-                'Trigger_PFMET120_PFMHT120_IDTight_PFHT60',
-                'Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60'
-            ]
-            
-            # Load the trigger data
-            trigger_data = tree.arrays(trigger_branches, library='np')
-            
-            # Apply OR logic: any trigger passes
-            hlt_mask = np.zeros(len(trigger_data[trigger_branches[0]]), dtype=bool)
-            for branch in trigger_branches:
-                if branch in trigger_data:
-                    hlt_mask |= (trigger_data[branch] == 1)
-            
-            return hlt_mask
-            
-        except Exception as e:
-            raise Exception(f"HLT fallback failed: {e}")
-
     def load_data_unified(self, file_paths, event_flags, custom_cuts, is_data=False):
         """
         Unified loader that handles both event flags and custom cuts in one pass.
@@ -273,6 +147,7 @@ class DataLoader:
                 branches.extend(f.strip() for f in or_part.split('+'))
         branches.extend(self.selection_manager.flags)
         branches.extend(self.selection_manager.inverted_flags)
+        branches.extend(self.selection_manager.hlt_triggers)
         branches = list(dict.fromkeys(branches))
 
         event_data = {flag: {} for flag in event_flags}
@@ -329,23 +204,17 @@ class DataLoader:
     _CUSTOM_CUT_FUNCTIONS = {'any', 'all', 'count', 'lead', 'abs'}
 
     def _branches_for_custom_cuts(self, custom_cuts):
-        """Return additional tree branches referenced by custom cut strings."""
-        if not custom_cuts:
-            return []
+        """Return tree branches referenced by custom cut strings.
 
-        known_branches = (
-            set(AnalysisConfig.VARIABLES) |
-            self._KNOWN_SCALAR_BRANCHES |
-            set(self.selection_manager.flags) |
-            set(self.selection_manager.inverted_flags)
-        )
+        Every identifier is requested; _load_one_file keeps only those present
+        in the tree, so selection flags and helper counts (e.g. nblBHPhotons)
+        can be cut on without being registered here.
+        """
         branches = []
         for cut in custom_cuts:
             if self._is_named_custom_cut(cut):
                 continue
-            for token in self._extract_cut_tokens(cut):
-                if token in known_branches:
-                    branches.append(token)
+            branches.extend(sorted(self._extract_cut_tokens(cut)))
         return branches
 
     @classmethod
@@ -580,8 +449,19 @@ class DataLoader:
                         missing_baseline_flags.append(flag)
                 if baseline_flag_cuts:
                     cut_expr += " & " + " & ".join(baseline_flag_cuts)
-                if self.verbose and missing_baseline_flags:
-                    print(f"  Note: baseline flag branch(es) absent from tree: {missing_baseline_flags}")
+                if missing_baseline_flags:
+                    print(f"  WARNING: baseline flag branch(es) absent from {file_path}, "
+                          f"cut NOT applied: {missing_baseline_flags}")
+
+                available_triggers = [t for t in self.selection_manager.hlt_triggers
+                                      if t in available_branches]
+                if available_triggers:
+                    cut_expr += " & (" + " | ".join(f"({t} == 1)" for t in available_triggers) + ")"
+                missing_triggers = [t for t in self.selection_manager.hlt_triggers
+                                    if t not in available_branches]
+                if missing_triggers:
+                    print(f"  WARNING: trigger branch(es) absent from {file_path}, "
+                          f"dropped from the HLT OR: {missing_triggers}")
 
                 scalar_prefilter = self._build_scalar_prefilter(
                     custom_cuts, available_branches, tree)
@@ -1200,7 +1080,7 @@ class DataLoader:
             return 'LeptonicSV'
         if var_name.startswith('baseLinePhoton_'):
             return 'baseLinePhoton'
-        if var_name in {'rjr_Ms', 'rjr_Rs', 'rjrPTS'}:
+        if var_name in {'rjr_Ms', 'rjr_Rs', 'rjrPTS', 'rjrNJetsJa', 'rjrNJetsJb'}:
             return 'rjr'
         return None
 

@@ -9,6 +9,7 @@ output: datamc_promptpho_uncompressed_v49
 
 # CR-only prompt photon selection:
 # - nBaseLinePhotons >= 1
+# - SV_nHadronic == 0 and SV_nLeptonic == 0
 # - all baseline photons satisfy |baseLinePhoton_WTimeSig| < 2.5
 # - all baseline photons satisfy the BigGuy medium-iso pt-dependent ANN window
 # - all baseline photons are barrel photons, |baseLinePhoton_Eta| < 1.479

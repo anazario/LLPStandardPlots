@@ -1,11 +1,11 @@
 base_dir: /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49
 
-lumi: 200.0
-energy: 13.6
+lumi: 138.0
+energy: 13.
 analysis_type: compressed
-isr_pt_cut: 300
+isr_pt_cut: 800
 plots: [ratio]
-format: pdf
+format: [pdf,root]
 output: datamc_promptpho_compressed_v49
 
 # CR-only prompt photon selection:
@@ -20,29 +20,25 @@ signal:
   - SMS_SVHPM100_v34_gogoGZ_FULLMINI_mGl-2500_mN2-1200_mN1-500_ct0p1_rjrskim.root
 
 background:
-  - name: QCD multijets
-    files:
-      - background/QCD_R18.root
   - name: W+jets
     files:
-      - background/WJets_R18.root
+      - background/WJets.root
   - name: Z+jets
     files:
-      - background/ZJets_R18.root
+      - background/ZJets.root
   - name: t#bar{t}+jets
+    scale: 1.
     files:
-      - background/TTJets_R18.root
+      - background/TTJets.root
   - name: "#gamma+jets"
+    scale: 1.
     files:
-      - background/GJets_R18.root
-
+      - background/GJets.root
+      - background/QCD.root
 data:
   - name: Run 2+3
     combine: true
     files:
-      - data/MET_R16.root
-      - data/MET_R17.root
-      - data/MET_R18.root
-      - data/JetMET_R22.root
-      - data/JetMET_R23.root
-      - data/JetMET_R24.root
+      - data/MET_Run2016.root
+      - data/MET_Run2017.root
+      - data/MET_Run2018.root

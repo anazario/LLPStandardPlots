@@ -8,10 +8,10 @@ Schema example
 --------------
 lumi: 138.0
 energy: 13.0
-flags: [passNHad1SelectionSRTight]
+flags: [passNHadGe1SelectionHighDxySigSR]
 plots: [1d, 2d, ratio]
 format: pdf
-output: run2_nhad1
+output: run2_nhadge1_sr
 
 signal:
   - /eos/.../SMS_*_ct0p1_rjrskim.root        # plain path/glob — scale defaults to 1.0
@@ -64,7 +64,7 @@ _PARSER_DEFAULTS = {
     'format': 'root',
     'output': 'standard_plots.root',
     'tree': 'kuSkimTree',
-    'flags': ['passNHad1SelectionSRTight', 'passNLep1SelectionSRTight'],
+    'flags': ['passNHadGe1SelectionHighDxySigSR', 'passNLepGe1SelectionHighDxySigSR'],
     'plots': ['all'],
     'analysis_type': 'uncompressed',
     'normalize': False,
@@ -177,7 +177,7 @@ def load_input_config(yaml_path):
     global_cuts = _normalize_cut_list(cfg.get('global_cuts', None))
 
     override_keys = (
-        'lumi', 'energy', 'plots', 'output', 'tree', 'analysis_type',
+        'lumi', 'energy', 'plots', 'vars', 'output', 'tree', 'analysis_type',
         'isr_pt_cut', 'normalize'
     )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}

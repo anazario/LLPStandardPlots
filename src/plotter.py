@@ -179,6 +179,7 @@ class Plotter1D(PlotterBase):
         hists = []
         max_y = 0
 
+        is_data_type = collection_type.lower() == "data"
         for i, (filename, data) in enumerate(data_collection.items()):
             values = data.get(mapped_key)
             if values is None or len(values) == 0:
@@ -190,19 +191,22 @@ class Plotter1D(PlotterBase):
                 continue
             if normalized and h.Integral() > 0:
                 h.Scale(1.0 / h.Integral())
-            
+
             if h.GetMaximum() > max_y:
                 max_y = h.GetMaximum()
-                
+
             hists.append(h)
-            
-            # Determine label based on collection type
-            if collection_type.lower() == "background":
-                label = parse_background_name(filename)
+
+            if is_data_type:
+                entry_label = "Data"
+                legend_opt = "fl"
+            elif collection_type.lower() == "background":
+                entry_label = parse_background_name(filename)
+                legend_opt = "fl"
             else:
-                label = parse_signal_name(filename)
-                
-            legend.AddEntry(h, label, "fl")
+                entry_label = parse_signal_name(filename)
+                legend_opt = "fl"
+            legend.AddEntry(h, entry_label, legend_opt)
 
         if not hists:
             return None
@@ -210,10 +214,11 @@ class Plotter1D(PlotterBase):
         # Use helper for axis setup
         self.setup_axes(hists[0], var_label, normalized=normalized)
 
+        draw_opt = "HIST"
         hists[0].GetYaxis().SetRangeUser(0.0001, max_y * 100 if normalized else max_y * 1000)
-        hists[0].Draw("HIST")
+        hists[0].Draw(draw_opt)
         for h in hists[1:]:
-            h.Draw("HIST SAME")
+            h.Draw(f"{draw_opt} SAME")
 
         legend.Draw()
         canvas.SetLogy()
@@ -383,6 +388,155 @@ class Plotter1D(PlotterBase):
         canvas.sig_hists = sig_hists
         canvas.h_cr = h_cr
         canvas.legend = legend
+        return canvas
+
+    def plot_tf_shape(self, cr_data_coll, sr_data_coll, sig_cr_coll, sig_sr_coll,
+                      var_name, var_label, bins, x_min, x_max,
+                      cr_label="Data (CR)", suffix="", final_state_label=None,
+                      normalize=False):
+        """Overlay CR data shape and TF-normalized SR prediction with optional signal.
+
+        TF is the ratio SR[max_CR_bin] / CR[max_CR_bin], where max_CR_bin is the
+        highest-content bin in the CR histogram.  The TF×CR histogram is the
+        per-bin CR counts multiplied by this single transfer factor, giving the
+        predicted SR background shape.  Signal histograms are lumi-scaled (the
+        loader applies evtFillWgt * luminosity) and shown for both regions.
+        """
+        from src.utils import parse_signal_name as _parse_sig
+
+        canvas_name = f"tf_shape_{var_name}_{suffix}"
+        canvas = self._initialize_canvas(canvas_name, x_min, x_max, var_label)
+
+        mapped_var = self._map_var_name(var_name)
+        weights_key = f'{mapped_var}_weights'
+
+        _SIG_COLORS = [
+            ROOT.kGreen+2, ROOT.kMagenta+1, ROOT.kOrange+1,
+            ROOT.kCyan+2,  ROOT.kViolet+1,  ROOT.kSpring+6,
+        ]
+
+        def _combined_hist(coll, title, color, line_style=1, line_width=3):
+            vals, wgts = [], []
+            for data in coll.values():
+                if mapped_var in data:
+                    vals.extend(data[mapped_var])
+                    wgts.extend(data.get(weights_key, data.get('weights', [])))
+            if not vals:
+                return None
+            h = self.create_histogram(np.array(vals), np.array(wgts),
+                                      bins, x_min, x_max, title, color=color)
+            if not self._hist_has_content(h):
+                return None
+            h.SetFillStyle(0)
+            h.SetLineStyle(line_style)
+            h.SetLineWidth(line_width)
+            return h
+
+        h_cr = _combined_hist(cr_data_coll, "cr_data", ROOT.kBlack)
+        if h_cr is None:
+            return None
+
+        h_sr_raw = _combined_hist(sr_data_coll, "sr_data", ROOT.kBlack)
+
+        # Compute TF from the highest-stat CR bin
+        h_tf = None
+        tf = None
+        if h_sr_raw is not None:
+            max_bin = h_cr.GetMaximumBin()
+            cr_val = h_cr.GetBinContent(max_bin)
+            sr_val = h_sr_raw.GetBinContent(max_bin)
+            if cr_val > 0:
+                tf = sr_val / cr_val
+                h_tf = h_cr.Clone(f"h_tf_{var_name}_{suffix}")
+                h_tf.SetDirectory(0)
+                h_tf.Scale(tf)
+                h_tf.SetLineColor(ROOT.kAzure+1)
+                h_tf.SetLineStyle(2)
+                h_tf.SetLineWidth(3)
+                h_tf.SetFillStyle(0)
+            else:
+                print(f"  Warning: highest CR bin is empty for '{var_name}', TF undefined.")
+
+        if normalize:
+            for h in (h_cr, h_tf):
+                if h and h.Integral() > 0:
+                    h.Scale(1.0 / h.Integral())
+
+        # Signal histograms for CR and SR
+        sig_pairs = []  # list of (label, h_cr_sig, h_sr_sig)
+        for i, (sig_name, data_cr) in enumerate(sig_cr_coll.items()):
+            color = _SIG_COLORS[i % len(_SIG_COLORS)]
+            cr_vals = data_cr.get(mapped_var)
+            if cr_vals is None or len(cr_vals) == 0:
+                continue
+            cr_wgts = data_cr.get(weights_key, data_cr.get('weights', []))
+            h_scr = self.create_histogram(np.array(cr_vals), np.array(cr_wgts),
+                                          bins, x_min, x_max, f"sig_cr_{i}", color=color)
+            h_scr.SetFillStyle(0)
+            h_scr.SetLineStyle(1)
+            h_scr.SetLineWidth(2)
+            if not self._hist_has_content(h_scr):
+                continue
+            if normalize and h_scr.Integral() > 0:
+                h_scr.Scale(1.0 / h_scr.Integral())
+
+            h_ssr = None
+            data_sr = sig_sr_coll.get(sig_name)
+            if data_sr is not None:
+                sr_vals = data_sr.get(mapped_var)
+                if sr_vals is not None and len(sr_vals) > 0:
+                    sr_wgts = data_sr.get(weights_key, data_sr.get('weights', []))
+                    h_ssr = self.create_histogram(np.array(sr_vals), np.array(sr_wgts),
+                                                  bins, x_min, x_max, f"sig_sr_{i}", color=color)
+                    h_ssr.SetFillStyle(0)
+                    h_ssr.SetLineStyle(2)
+                    h_ssr.SetLineWidth(2)
+                    if not self._hist_has_content(h_ssr):
+                        h_ssr = None
+                    elif normalize and h_ssr.Integral() > 0:
+                        h_ssr.Scale(1.0 / h_ssr.Integral())
+
+            sig_pairs.append((_parse_sig(sig_name), h_scr, h_ssr))
+
+        # Collect all histograms, determine y-range
+        all_hists = [h_cr]
+        if h_tf is not None:
+            all_hists.append(h_tf)
+        for _, h_scr, h_ssr in sig_pairs:
+            all_hists.append(h_scr)
+            if h_ssr is not None:
+                all_hists.append(h_ssr)
+
+        max_y = max((h.GetMaximum() for h in all_hists), default=1.0)
+
+        self.setup_axes(all_hists[0], var_label, normalized=normalize)
+        all_hists[0].GetYaxis().SetRangeUser(1e-2, max_y * 1000)
+        all_hists[0].Draw("HIST")
+        for h in all_hists[1:]:
+            h.Draw("HIST SAME")
+
+        # Legend — two columns: CR entries left, SR entries right when signals present
+        n_entries = 1 + (1 if h_tf else 0) + 2 * len(sig_pairs)
+        leg_y1 = max(0.55, 0.88 - 0.06 * n_entries)
+        legend = CMS.cmsLeg(0.35, leg_y1, 0.92, 0.88, textSize=0.030)
+        legend.AddEntry(h_cr, cr_label, "l")
+        if h_tf is not None:
+            legend.AddEntry(h_tf, f"TF #times CR  (TF = {tf:.3f})", "l")
+        for label, h_scr, h_ssr in sig_pairs:
+            legend.AddEntry(h_scr, f"{label} (CR)", "l")
+            if h_ssr is not None:
+                legend.AddEntry(h_ssr, f"{label} (SR)", "l")
+        legend.Draw()
+
+        canvas.SetLogy()
+        self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos,
+                                   prelim_str="Preliminary", prelim_x=0.248,
+                                   lumi_x=0.9, cms_text_size_mult=1.)
+        self._draw_region_label(canvas, final_state_label, plot_type="1d")
+        canvas.Update()
+
+        canvas._hists = all_hists
+        canvas._legend = legend
         return canvas
 
 class Plotter2D(PlotterBase):
@@ -919,9 +1073,15 @@ class PlotterDataMC(PlotterBase):
             if existing_color:
                 # Update existing color's RGB values
                 existing_color.SetRGB(r, g, b)
+                existing_color.SetAlpha(1.0)
             else:
-                # Create new color at specific index
-                ROOT.TColor(expected_index, r, g, b)
+                # Create new color at specific index; release Python ownership so
+                # the TColor isn't garbage-collected (which unregisters it).
+                # Pass name and alpha explicitly: with only 4 args PyROOT can pick
+                # an overload that treats b as the alpha (washed-out fills).
+                color = ROOT.TColor(expected_index, r, g, b, "", 1.0)
+                ROOT.SetOwnership(color, False)
+                color.SetAlpha(1.0)
     
     def _combine_data_collections(self, data_collection):
         """Combine data from multiple files into single dataset."""

@@ -17,6 +17,14 @@ Usage examples:
       --fit-result root/fits/uncompressed/fitDiagnostics_PhoDelayedPromptSVHad_ValFits.root \\
       --fit-config root/fits/uncompressed/PhoSV_ValidationRegions_NonCompressed_FitConfig.yaml \\
       --output plots/uncompressed --lumi 12 --format pdf
+
+  # Overlay the prefit signal (total_signal, r=1) of one or more FitDiagnostics
+  # files, e.g. FullSim vs corrected FastSim for the same mass/ctau point:
+  python fit_plots.py \\
+      --fit-result runs/FullSim/results/fitdiag/.../gogoGZ_..._fitDiagnosticsTest.root \\
+      --fit-config FitConfig.yaml --output plots/sigcmp --lumi 259.3 \\
+      --signal FullSim=runs/FullSim/results/fitdiag/.../gogoGZ_..._fitDiagnosticsTest.root \\
+      --signal "FastSim corr.=runs/FastCorr/results/fitdiag/.../gogoGZ_..._fitDiagnosticsTest.root"
 """
 
 import argparse
@@ -49,7 +57,18 @@ def parse_args():
                    help="Highlight predicted SR bin in orange on ABCD plots")
     p.add_argument("--data-mc", action="store_true", default=False,
                    help="Draw stacked per-process Data/MC plots instead of total-background plots")
-    return p.parse_args()
+    p.add_argument("--signal", action="append", default=[], metavar="LABEL=FILE",
+                   help="Overlay shapes_prefit total_signal from this FitDiagnostics file as a line "
+                        "labelled LABEL (repeatable; not drawn with --data-mc)")
+    args = p.parse_args()
+    signals = []
+    for spec in args.signal:
+        label, sep, path = spec.partition("=")
+        if not sep or not label or not path:
+            p.error(f"--signal expects LABEL=FILE, got {spec!r}")
+        signals.append((label, path))
+    args.signal = signals
+    return args
 
 
 def main():
@@ -70,6 +89,7 @@ def main():
         label_scheme=args.label_scheme,
         show_sr=args.sr_color,
         data_mc=args.data_mc,
+        signals=args.signal,
     )
 
 

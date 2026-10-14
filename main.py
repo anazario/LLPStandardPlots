@@ -17,6 +17,7 @@ from src.selections import FinalStateResolver, is_blinded_selection
 from src.utils import parse_signal_name, parse_background_name
 
 from src.config import AnalysisConfig, AnalysisMode, ModeConfig
+from src.lumi import resolve_run_lumis, print_lumi_table, LumiError
 from src.input_config import (load_input_config, apply_config_to_args,
                                unique_files_from_groups, assemble_grouped_map)
 
@@ -286,7 +287,12 @@ def parse_arguments():
                        help='Number of parallel worker processes for file loading (default: 1)')
     parser.add_argument('--verbose', action='store_true', default=False,
                        help='Print per-file loading details (entries, cuts, RSS)')
-    parser.add_argument('--lumi', type=float, default=400.0, help='Integrated luminosity in fb^-1 (default: 400)')
+    parser.add_argument('--lumi', type=float, default=None,
+                       help='One global integrated luminosity in fb^-1 for all MC. Without it, each MC file is '
+                            'scaled by the luminosity of its run (see --years); default 400 if no years are known.')
+    parser.add_argument('--years', default=None,
+                       help='Data years setting the per-run MC luminosities: run2, run3, all, or a comma list '
+                            'like 16,17,18,22 (default: the years of the data files)')
     parser.add_argument('--energy', type=float, default=13.6, help='Centre-of-mass energy in TeV (default: 13.6)')
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
     parser.add_argument('--data-flag', default=None,
@@ -408,13 +414,35 @@ def main():
     if args.met_cut is not None:
         AnalysisConfig.MET_CUT = args.met_cut
 
+    # Luminosity: one global value (--lumi), or per-run values from the data years
+    lumi_info = None
+    if args.lumi is not None and args.years is not None:
+        print("Error: give either lumi (one global luminosity) or years (per-run luminosities), not both.")
+        sys.exit(1)
+    if args.lumi is None:
+        try:
+            lumi_info = resolve_run_lumis(args.years, signal_groups, bg_groups, data_groups)
+        except LumiError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        if lumi_info is None:
+            args.lumi = 400.0
+
     # Setup
-    style = StyleManager(luminosity=args.lumi, energy=args.energy)
+    if lumi_info:
+        print_lumi_table(lumi_info)
+        args.lumi = lumi_info['total']
+        style = StyleManager(luminosity=round(lumi_info['total']), energy=args.energy,
+                             energy_label=lumi_info['energy_label'])
+    else:
+        style = StyleManager(luminosity=args.lumi, energy=args.energy)
     style.set_style()
 
     loader = DataLoader(args.tree, luminosity=args.lumi,
                        analysis_mode=analysis_mode, isr_pt_cut=isr_pt_cut,
                        n_workers=args.workers, verbose=args.verbose)
+    if lumi_info:
+        loader.file_luminosities = lumi_info['file_lumis']
     plotter1d = Plotter1D(style)
     plotter2d = Plotter2D(style)
     plotter_datamc = PlotterDataMC(style)

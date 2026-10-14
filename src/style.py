@@ -8,9 +8,11 @@ except ImportError:
 class StyleManager:
     """Manages CMS plotting style configuration."""
     
-    def __init__(self, luminosity=400, energy=13):
+    def __init__(self, luminosity=400, energy=13, energy_label=None):
         self.luminosity = luminosity
         self.energy = energy
+        # Overrides "<energy> TeV" in the header, e.g. "13 TeV + 13.6 TeV"
+        self.energy_label = energy_label
         self.color_palette = ROOT.kViridis
         
         # Text sizes and positions (consistent with original script)
@@ -203,7 +205,8 @@ class StyleManager:
         lumi_label.SetTextAlign(31)  # Right-aligned
         # Format luminosity without decimal if it's a whole number
         lumi_text = f"{self.luminosity:g}" if self.luminosity == int(self.luminosity) else f"{self.luminosity}"
-        lumi_label.DrawLatex(lumi_x, lumi_y, f"{lumi_text} fb^{{-1}} ({self.energy} TeV)")
+        energy_text = self.energy_label or f"{self.energy} TeV"
+        lumi_label.DrawLatex(lumi_x, lumi_y, f"{lumi_text} fb^{{-1}} ({energy_text})")
 
     def draw_process_label(self, label_text, x_pos=0.65, y_pos=0.85, align=11):
         """Draw the process/sample label on the plot."""

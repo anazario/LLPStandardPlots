@@ -43,6 +43,24 @@ data:
     files:
       - /eos/.../JetMET_R22_*
       - /eos/.../JetMET_R23_*
+
+Per-run luminosity (Run 2 + Run 3 MC in one stack entry)
+--------------------------------------------------------
+Leave `lumi` out and each MC file is scaled by the luminosity of its own run,
+summed over the selected data years (table in src/lumi.py):
+
+years: all            # run2, run3, all, or a list like [16, 17, 18, 22]; optional,
+                      # default = the years of the data files
+
+background:
+  - name: QCD multijets
+    files:
+      - /eos/.../QCD_HT*_RunIISummer20UL18_*          # era from the file name -> run2
+      - /eos/.../QCD-4Jets_HT-*_Run3Summer23BPix_*    # -> run3
+      - {path: /eos/.../QCD_other.root, era: run3}    # explicit: run2 | run3 | all
+
+A group-level `era:` applies to all of its files. Signal files that name no run
+get the total. Setting `lumi` instead keeps one global luminosity for every file.
 """
 
 import glob as _glob
@@ -59,7 +77,8 @@ except ImportError:
 # Parser defaults — used to detect whether a CLI arg is still at its default
 # so YAML values can be applied without overriding explicit CLI choices.
 _PARSER_DEFAULTS = {
-    'lumi': 400.0,
+    'lumi': None,
+    'years': None,
     'energy': 13.6,
     'format': 'root',
     'output': 'standard_plots.root',
@@ -84,14 +103,35 @@ def _expand_globs(patterns, base_dir=None):
     return files
 
 
+def _expand_file_entries(raw, base_dir=None, group_era=None):
+    """
+    Expand a group's file entries to (files, eras).
+
+    Each entry is a path/glob string or a {path: ..., era: run2|run3|all} dict.
+    eras maps the expanded paths that have an explicit era (their own, else the
+    group's) to it; files without one get theirs from the file name.
+    """
+    files, eras = [], {}
+    for item in raw:
+        if isinstance(item, dict):
+            pattern, era = item['path'], item.get('era', group_era)
+        else:
+            pattern, era = item, group_era
+        matches = _expand_globs([pattern], base_dir)
+        files.extend(matches)
+        if era is not None:
+            eras.update((f, str(era)) for f in matches)
+    return files, eras
+
+
 def _parse_groups(entries, base_dir=None):
     """
     Parse a YAML list of file entries into group dicts:
-        {name: str|None, files: [str], combine: bool, scale: float}
+        {name: str|None, files: [str], combine: bool, scale: float, eras: {file: era}}
 
     Each entry may be:
       - a plain string  → treated as a single path/glob, no name, no combine
-      - a dict          → may have 'name', 'files' (str or list), 'combine', 'scale'
+      - a dict          → may have 'name', 'files' (str or list), 'combine', 'scale', 'era'
     """
     groups = []
     for entry in entries:
@@ -101,17 +141,20 @@ def _parse_groups(entries, base_dir=None):
                 'files': _expand_globs([entry], base_dir),
                 'combine': False,
                 'scale': 1.0,
+                'eras': {},
             })
         elif isinstance(entry, dict):
             raw = entry.get('files', [])
-            if isinstance(raw, str):
+            if isinstance(raw, (str, dict)):
                 raw = [raw]
             name = entry.get('name')
+            files, eras = _expand_file_entries(raw, base_dir, entry.get('era'))
             groups.append({
                 'name': name,
-                'files': _expand_globs(raw, base_dir),
+                'files': files,
                 'combine': entry.get('combine', name is not None),
                 'scale': float(entry.get('scale', 1.0)),
+                'eras': eras,
             })
     return groups
 
@@ -155,10 +198,10 @@ def load_input_config(yaml_path):
 
     Returns a dict with:
       signal_files  -- flat list of expanded signal file paths
-      signal_groups -- list of {name, files, combine, scale} dicts for signal
-      bg_groups     -- list of {name, files, combine, scale} dicts
-      data_groups   -- list of {name, files, combine, scale} dicts
-      overrides     -- dict of optional CLI-level overrides (lumi, energy, …)
+      signal_groups -- list of {name, files, combine, scale, eras} dicts for signal
+      bg_groups     -- list of {name, files, combine, scale, eras} dicts
+      data_groups   -- list of {name, files, combine, scale, eras} dicts
+      overrides     -- dict of optional CLI-level overrides (lumi, years, energy, …)
     """
     with open(yaml_path) as f:
         cfg = yaml.safe_load(f)
@@ -177,7 +220,7 @@ def load_input_config(yaml_path):
     global_cuts = _normalize_cut_list(cfg.get('global_cuts', None))
 
     override_keys = (
-        'lumi', 'energy', 'plots', 'vars', 'output', 'tree', 'analysis_type',
+        'lumi', 'years', 'energy', 'plots', 'vars', 'output', 'tree', 'analysis_type',
         'isr_pt_cut', 'normalize'
     )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}

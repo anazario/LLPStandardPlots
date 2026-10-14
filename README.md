@@ -39,7 +39,8 @@ A flexible plotting framework for Long-Lived Particle (LLP) analyses, designed t
 | `--output` | Output file (ROOT) or directory (PDF/PNG) | No | `standard_plots.root` |
 | `--format` | Output format: `root`, `pdf`, `png`, `eps` | No | `root` |
 | `--save-hists` | (ROOT format only) Also write histogram objects alongside canvases | No | False |
-| `--lumi` | Integrated luminosity in fb⁻¹ | No | `400.0` |
+| `--lumi` | One global integrated luminosity in fb⁻¹ for all MC | No | per-run (see below), else `400.0` |
+| `--years` | Data years setting the per-run MC luminosities: `run2`, `run3`, `all`, or e.g. `16,17,18,22` | No | years of the data files |
 | `--energy` | Centre-of-mass energy in TeV | No | `13.6` |
 | `--normalize` | Normalize 1D and Data/MC plots to unit area | No | False |
 | `--workers` | Number of parallel worker processes for file loading | No | `1` |
@@ -128,6 +129,23 @@ flags:
 
 blind_cuts: [false, false]   # per-flag data blinding for custom cut strings
 ```
+
+#### Run 2 + Run 3 luminosity
+
+Leave `lumi` out and each MC file is scaled by the luminosity of its own run, so a process made of Run 2 and Run 3 samples enters the stack as one entry with each part normalized to its run. The luminosities are summed over the selected data years (table in `src/lumi.py`, same numbers as `llpcombine.py`), and the header shows the rounded total, e.g. `424 fb⁻¹ (13 TeV + 13.6 TeV)`.
+
+```yaml
+years: all        # run2, run3, all, or a list like [16, 17, 18, 22]; default: the years of the data files
+
+background:
+  - name: QCD multijets
+    files:
+      - QCD_HT*_RunIISummer20UL18_*.root           # era from the file name -> run2
+      - QCD-4Jets_HT-*_Run3Summer23BPix_*.root     # -> run3
+      - {path: QCD_other.root, era: run3}          # explicit: run2 | run3 | all
+```
+
+The era is read from the file name (`_R18`/`_R23`, `RunIISummer20UL18`, `Run3Summer23`, `Rn3Sm23`, `Run2024C`); a background file that names no run is an error until it is given an `era:` (per file, or once for the whole group). Signal files that name no run get the total. The file → era → luminosity table is printed before loading. Setting `lumi` keeps one global luminosity for every file. See `config/datamc_v34_run2run3_splitlumi.yaml`.
 
 ### Example commands
 

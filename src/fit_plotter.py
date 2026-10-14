@@ -201,6 +201,21 @@ def _uid():
     return _canvas_counter[0]
 
 
+# A run-split fit (llpcombine.py datasplit: run) has every bin twice, as <bin>_Run2 and
+# <bin>_Run3; the plots merge each pair back into the config's single <bin>.
+RUN_SPLIT_SUFFIXES = ("_Run2", "_Run3")
+
+_GARWOOD_ALPHA = 1 - 0.682689492  # central 68.27% interval, as Combine stores on data
+
+
+def _garwood(n):
+    """(low, high) Poisson errors on an observed count n, the Garwood interval Combine
+    puts on the fitDiagnostics data graphs."""
+    lo = n - ROOT.Math.gamma_quantile(_GARWOOD_ALPHA / 2, n, 1.0) if n > 0 else 0.0
+    hi = ROOT.Math.gamma_quantile_c(_GARWOOD_ALPHA / 2, n + 1, 1.0) - n
+    return lo, hi
+
+
 def _datamc_background_key(process_name: str) -> str:
     """Map Combine/SampleTool process names onto labels known by PlotterDataMC."""
     label_map = {
@@ -297,6 +312,7 @@ class FitPlotter:
         self.datamc_plotter = PlotterDataMC(self.style)
         self.luminosity = luminosity
         self.energy = energy
+        self._covar_cache = {}  # (file path, folder) -> (overall_total_covar, label index) or None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -643,37 +659,91 @@ class FitPlotter:
     # ── Yield extraction ──────────────────────────────────────────────────────
 
     def _resolve_bin_names(self, uf, folder, bin_list):
-        """Map config bin names to actual names in the ROOT file.
+        """Map config bin names to the bin directories in the ROOT file: one list
+        of parts per config bin, to be summed into that bin.
 
         Combine/Higgs tools prefix bin directories with the signal point name
         (e.g. gogoGZ_2300_2200_2100_10_SVonly_AnchorCR00).  This method finds
-        the matching key regardless of whether a prefix is present.
+        the matching key regardless of whether a prefix is present.  A bin found
+        as is has one part; a run-split fit has two, <bin>_Run2 and <bin>_Run3.
         """
-        available = {k.split(";")[0] for k in uf[folder].keys()}
+        available = {k.split(";")[0] for k in uf[folder].keys(recursive=False)}
+
+        def find(bn):
+            if bn in available:
+                return bn
+            return next((k for k in available if k.endswith(f"_{bn}")), None)
+
         resolved = []
         for bn in bin_list:
-            if bn in available:
-                resolved.append(bn)
-            else:
-                match = next((k for k in available if k.endswith(f"_{bn}")), None)
-                if match is None:
-                    raise uproot.exceptions.KeyInFileError(
-                        f"Cannot find bin '{bn}' in folder '{folder}'"
-                    )
-                resolved.append(match)
+            match = find(bn)
+            parts = [match] if match is not None else [find(bn + s) for s in RUN_SPLIT_SUFFIXES]
+            if None in parts:
+                raise uproot.exceptions.KeyInFileError(
+                    f"Cannot find bin '{bn}' (or its {'/'.join(RUN_SPLIT_SUFFIXES)} halves) in folder '{folder}'"
+                )
+            resolved.append(parts)
         return resolved
+
+    def _run_split_cov(self, uf, folder, parts, errs):
+        """Sum of the cross terms 2*rho_ij*err_i*err_j of a merged bin, errs being the
+        parts' background errors and rho their correlation in overall_total_covar
+        (written by FitDiagnostics --saveOverallShapes; its labels are
+        <bin dir>_<bin index>).  That matrix is of the total (signal + background),
+        so only its correlation is used: exact for shapes_fit_b, where the signal is
+        zero; prefit an approximation that, with |rho| <= 1, never makes the merged
+        variance negative (the total's covariance itself can, where the signal error
+        dwarfs a zero background one).  Without the matrix the cross terms are taken
+        as 0 (quadrature), with a warning."""
+        cache = self._covar_cache
+        key = (uf.file_path, folder)
+        if key not in cache:
+            path = f"{folder}/overall_total_covar"
+            if path in uf:
+                c = uf[path]
+                cache[key] = (c.values(), {l: i for i, l in enumerate(c.axis(0).labels())})
+            else:
+                cache[key] = None
+                print(f"[FitPlotter] WARNING: no {path} (rerun FitDiagnostics with --saveOverallShapes): "
+                      f"Run2/Run3 bins merged in quadrature, ignoring their correlation")
+        if cache[key] is None:
+            return 0.0
+        cov, index = cache[key]
+        idx = [index[f"{p}_0"] for p in parts]
+        total = 0.0
+        for k in range(len(idx)):
+            for m in range(k + 1, len(idx)):
+                a, b = idx[k], idx[m]
+                if cov[a, a] > 0 and cov[b, b] > 0:
+                    total += 2 * cov[a, b] / np.sqrt(cov[a, a] * cov[b, b]) * errs[k] * errs[m]
+        return total
+
+    def _merged_data(self, uf, folder, parts):
+        """(count, low error, high error) of the data in a (possibly merged) bin: the
+        stored graph errors for one part, the Garwood interval of the summed count
+        for several (the convention Combine uses for each part)."""
+        gs = [uf[f"{folder}/{p}/data"] for p in parts]
+        if len(gs) == 1:
+            g = gs[0]
+            return float(g.member("fY")[0]), float(g.member("fEYlow")[0]), float(g.member("fEYhigh")[0])
+        n = sum(float(g.member("fY")[0]) for g in gs)
+        return (n, *_garwood(n))
 
     def _extract_yields(self, uf, folder, bin_list):
         bkg, berr, dy, eyl, eyh = [], [], [], [], []
         resolved = self._resolve_bin_names(uf, folder, bin_list)
-        for bn in resolved:
-            h = uf[f"{folder}/{bn}/total_background"]
-            g = uf[f"{folder}/{bn}/data"]
-            bkg.append(float(h.values()[0]))
-            berr.append(float(h.errors()[0]))
-            dy.append(float(g.member("fY")[0]))
-            eyl.append(float(g.member("fEYlow")[0]))
-            eyh.append(float(g.member("fEYhigh")[0]))
+        for parts in resolved:
+            hs = [uf[f"{folder}/{p}/total_background"] for p in parts]
+            errs = [float(h.errors()[0]) for h in hs]
+            var = sum(e ** 2 for e in errs)
+            if len(parts) > 1:
+                var += self._run_split_cov(uf, folder, parts, errs)
+            bkg.append(sum(float(h.values()[0]) for h in hs))
+            berr.append(float(np.sqrt(max(var, 0.0))))
+            n, lo, hi = self._merged_data(uf, folder, parts)
+            dy.append(n)
+            eyl.append(lo)
+            eyh.append(hi)
         return (np.array(bkg), np.array(berr),
                 np.array(dy),  np.array(eyl), np.array(eyh))
 
@@ -682,16 +752,16 @@ class FitPlotter:
         identically 0) and shapes_fit_s scales it by the fitted r."""
         resolved = self._resolve_bin_names(uf, folder, bin_list)
         vals = []
-        for bn in resolved:
-            path = f"{folder}/{bn}/total_signal"
-            vals.append(float(uf[path].values()[0]) if path in uf else 0.0)
+        for parts in resolved:
+            paths = [f"{folder}/{p}/total_signal" for p in parts]
+            vals.append(sum(float(uf[path].values()[0]) for path in paths if path in uf))
         return np.array(vals)
 
     def _shape_processes(self, uf, folder, resolved_bins):
         skip = {"data", "total", "total_background", "total_signal", "total_covar", "overall_total_covar"}
         processes = []
         seen = set()
-        for bn in resolved_bins:
+        for bn in (p for parts in resolved_bins for p in parts):
             for key in uf[f"{folder}/{bn}"].keys():
                 proc = key.split(";")[0]
                 if proc in skip or proc in seen:
@@ -709,24 +779,25 @@ class FitPlotter:
         data_hist.SetDirectory(0)
         data_hist.Sumw2()
 
-        for i, bn in enumerate(resolved, start=1):
-            g = uf[f"{folder}/{bn}/data"]
-            data_hist.SetBinContent(i, float(g.member("fY")[0]))
-            data_hist.SetBinError(i, max(float(g.member("fEYlow")[0]), float(g.member("fEYhigh")[0])))
+        for i, parts in enumerate(resolved, start=1):
+            n, lo, hi = self._merged_data(uf, folder, parts)
+            data_hist.SetBinContent(i, n)
+            data_hist.SetBinError(i, max(lo, hi))
 
+        # Per-process errors of merged bins add in quadrature: like the stacked band
+        # itself (a sum of independent per-process errors), it has no covariance.
         mc_histograms = []
         for proc in self._shape_processes(uf, folder, resolved):
             hist = ROOT.TH1F(f"h_{proc}_{name}_{_uid()}", proc, nbins, 0, nbins)
             hist.SetDirectory(0)
             hist.Sumw2()
             has_yield = False
-            for i, bn in enumerate(resolved, start=1):
-                path = f"{folder}/{bn}/{proc}"
-                if path not in uf:
+            for i, parts in enumerate(resolved, start=1):
+                hs = [uf[path] for path in (f"{folder}/{p}/{proc}" for p in parts) if path in uf]
+                if not hs:
                     continue
-                h = uf[path]
-                value = float(h.values()[0])
-                error = float(h.errors()[0])
+                value = sum(float(h.values()[0]) for h in hs)
+                error = float(np.sqrt(sum(float(h.errors()[0]) ** 2 for h in hs)))
                 hist.SetBinContent(i, value)
                 hist.SetBinError(i, error)
                 has_yield = has_yield or value != 0

@@ -44,6 +44,9 @@ class DataLoader:
                  analysis_mode='uncompressed', isr_pt_cut=None, n_workers=1, verbose=False):
         self.tree_name = tree_name
         self.luminosity = luminosity
+        # Per-file MC luminosity (fb^-1) for split Run 2 / Run 3 normalization;
+        # files not listed use self.luminosity.
+        self.file_luminosities = {}
         self.analysis_mode = analysis_mode
         self.isr_pt_cut = isr_pt_cut
         self.n_workers = max(1, int(n_workers))
@@ -407,6 +410,7 @@ class DataLoader:
 
         event_result = {}
         custom_result = {}
+        file_lumi = self.file_luminosities.get(file_path, self.luminosity)
 
         if self.verbose:
             print(f"Loading {file_path}...  [RSS {self._rss_mb():.0f} MB]")
@@ -534,7 +538,8 @@ class DataLoader:
                         if np.sum(combined_mask) == 0:
                             continue
 
-                        extracted_vars = self._extract_values(chunk, combined_mask, is_data)
+                        extracted_vars = self._extract_values(chunk, combined_mask, is_data,
+                                                              luminosity=file_lumi)
                         if extracted_vars:
                             event_chunks[fs_flag].append(extracted_vars)
 
@@ -561,7 +566,8 @@ class DataLoader:
                             continue
                         extracted_vars = self._extract_values(
                             chunk, combined_mask, is_data,
-                            selected_object_masks=selected_object_masks)
+                            selected_object_masks=selected_object_masks,
+                            luminosity=file_lumi)
                         if extracted_vars:
                             n_stored = max((len(v) for v in extracted_vars.values()), default=0)
                             custom_stored_events[i] += n_stored
@@ -648,8 +654,10 @@ class DataLoader:
             return passes_pt
         return passes_pt and passes_risr
 
-    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None):
+    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None):
         """Helper method to extract values for both event flags and custom cuts."""
+        if luminosity is None:
+            luminosity = self.luminosity
         # Initialize storage for all variables
         extracted_data = {}
 
@@ -679,7 +687,7 @@ class DataLoader:
                 continue
 
             # Get base event weight
-            base_weight = 1.0 if is_data else data['evtFillWgt'][idx] * self.luminosity
+            base_weight = 1.0 if is_data else data['evtFillWgt'][idx] * luminosity
 
             # Extract all configured variables
             for var_key, var_config in AnalysisConfig.VARIABLES.items():

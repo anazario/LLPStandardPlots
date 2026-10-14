@@ -32,6 +32,12 @@ effect -- so prefer disjoint control regions.
 With per-era data (data files named by year), every channel is split into
 Run 2 and Run 3 by default; that is what makes per-era SFs (--per-era) measurable.
 
+A simultaneous fit assumes each process is off by the same factor in every region.
+Regions with very different selections (photon vs SV, ...) mismodel the MC
+differently, so one SF per process becomes a compromise that fits none of them:
+--per-region fits every region on its own and writes its SFs to the regions:
+block of the SF file (read by replot_yields.py).
+
 Examples
 --------
   # One SF per process, RISR of every unblinded region
@@ -40,6 +46,9 @@ Examples
   # Separate Run 2 / Run 3 SFs for QCD, fix ttbar at 1, pick the channels
   python fit_sfs.py yields.root --per-era "QCD multijets" --fix "t#bar{t}+jets=1" \\
       --channels CustomRegion1:isr_risr CustomRegion2:isr_ptisr -o sfs.yaml
+
+  # Separate SFs in every region (one fit per region)
+  python fit_sfs.py yields.root --per-region --per-era all -o sfs.yaml
 
   # Then redraw everything with the fitted SFs
   python replot_yields.py yields.root --sf sfs.yaml
@@ -67,7 +76,7 @@ FIT_DEFAULTS = OrderedDict([
     ('channels', None), ('float_procs', None), ('fix', []), ('per_era', []), ('era', None),
     ('no_era_split', False), ('prior', None), ('no_mc_stat', False), ('min_mc', 0.0),
     ('output', None), ('replot', False), ('replot_output', None), ('replot_format', None),
-    ('rebin', None),
+    ('rebin', None), ('per_region', False),
 ])
 
 SF_MIN, SF_MAX = 1e-4, 100.0
@@ -88,6 +97,8 @@ def parse_arguments(argv=None):
                    help='Processes held at a fixed SF, e.g. "t#bar{t}+jets=1"')
     p.add_argument('--per-era', nargs='+', default=None, metavar='PROC',
                    help='Processes with one SF per era instead of one overall ("all" for every process)')
+    p.add_argument('--per-region', action='store_const', const=True, default=None,
+                   help='Fit every region on its own, with its own SFs (written to the regions: block)')
     p.add_argument('--era', nargs='+', default=None, help='Fit only these eras (MC and data)')
     p.add_argument('--no-era-split', action='store_const', const=True, default=None,
                    help='Fit the summed data instead of splitting each channel by era')
@@ -126,12 +137,12 @@ def fit_options(sf_fit=None, **overrides):
 
     YAML key spellings: channels, float, fix ({proc: sf} or list), per_era, era,
     era_split (bool), prior, mc_stat (bool), min_mc, output, replot (bool),
-    replot_output, replot_format, rebin (N | [edges] | {var: N | [edges]}).
+    replot_output, replot_format, rebin (N | [edges] | {var: N | [edges]}), per_region (bool).
     """
     block = dict(sf_fit or {})
     unknown = set(block) - {'channels', 'float', 'fix', 'per_era', 'era', 'era_split', 'prior',
                             'mc_stat', 'min_mc', 'output', 'replot', 'replot_output', 'replot_format',
-                            'rebin'}
+                            'rebin', 'per_region'}
     if unknown:
         raise FitError(f"unknown sf_fit key(s): {sorted(unknown)}")
     from_yaml = {
@@ -149,6 +160,7 @@ def fit_options(sf_fit=None, **overrides):
         'replot_output': block.get('replot_output'),
         'replot_format': _as_list(block.get('replot_format')),
         'rebin': block.get('rebin'),
+        'per_region': block.get('per_region'),
     }
     opts = {}
     for key, default in FIT_DEFAULTS.items():
@@ -476,12 +488,43 @@ def fit(model):
 
 
 def run_fit(yields_path, args):
-    """Fit, print the results and write args.output (if set). Returns (params, values, errors)."""
+    """
+    Fit, print the results and write args.output (if set). Returns (params, values, errors).
+
+    With args.per_region every region is fitted on its own (its own channels and SFs) and
+    the SFs go to the regions: block of the output; params are then named "<region>/<param>".
+    """
     meta, hists = read_yields(yields_path)
     channels = parse_channels(args.channels, meta, hists) if args.channels else default_channels(meta)
     if not channels:
         raise FitError("no unblinded channel to fit")
 
+    if getattr(args, 'per_region', False):
+        groups = OrderedDict()
+        for c in channels:
+            groups.setdefault(c[0], []).append(c)
+    else:
+        groups = OrderedDict([(None, channels)])
+
+    results = OrderedDict()
+    for region, chans in groups.items():
+        if region is not None:
+            print(f"\n{'=' * 24} {region} {'=' * 24}")
+        results[region] = _fit_channels(meta, hists, chans, args)
+
+    if args.output:
+        _write_sfs(args, yields_path, meta, results)
+
+    params, values, errors = [], [], []
+    for region, r in results.items():
+        params += [p if region is None else f"{region}/{p}" for p in r['model'].params]
+        values += list(r['theta'])
+        errors += list(r['err'])
+    return params, np.array(values), np.array(errors)
+
+
+def _fit_channels(meta, hists, channels, args):
+    """Fit these channels together and print the results."""
     model, chan_labels, split, fixed, per_era = build_model(meta, hists, channels, args)
     theta, cov, singular, ok, at_bound = fit(model)
     err = np.sqrt(np.clip(np.diag(cov), 0, None))  # NaN for parameters at a bound
@@ -535,39 +578,57 @@ def run_fit(yields_path, args):
     print(f"{'total':<36} {len(model.n):>5} {pre.sum():>10.1f} {total:>11.1f}   "
           f"ndf {ndf}   p-value {stats.chi2.sf(total, ndf) if ndf > 0 else float('nan'):.3g}")
 
-    if args.output:
-        sfs = OrderedDict()
-        for p, v in zip(model.params, theta):
-            proc, _, era = p.partition(':') if p not in meta['processes'] else (p, '', '')
-            if era:
-                sfs.setdefault(proc, OrderedDict())[era] = round(float(v), 5)
-            else:
-                sfs[proc] = round(float(v), 5)
-        for p, v in fixed.items():
-            sfs[p] = float(v)
-        doc = OrderedDict([
-            ('scale_factors', sfs),
-            ('fit', OrderedDict([
-                ('yields', str(yields_path)),
-                ('channels', chan_labels),
-                ('parameters', {p: ({'value': round(float(v), 5), 'error': None, 'at_bound': b} if b else
-                                    {'value': round(float(v), 5), 'error': round(float(e), 5)})
-                                for p, v, e, b in zip(model.params, theta, err, at_bound)}),
-                ('correlation', {p: [round(float(c), 4) if np.isfinite(c) else None for c in row]
-                                 for p, row in zip(model.params, corr)}),
-                ('rebin', rebin),
-                ('deviance', round(float(total), 3)),
-                ('ndf', int(ndf)),
-                ('prior', args.prior),
-                ('mc_stat', not args.no_mc_stat),
-            ])),
-        ])
-        yaml.add_representer(OrderedDict, lambda d, data: d.represent_mapping('tag:yaml.org,2002:map', data.items()))
-        with open(args.output, 'w') as fh:
-            yaml.dump(doc, fh, sort_keys=False, default_flow_style=None, width=120)
-        print(f"\nScale factors written to {args.output}  (use: replot_yields.py {yields_path} --sf {args.output})")
+    return dict(model=model, theta=theta, err=err, corr=corr, at_bound=at_bound, fixed=fixed,
+                chan_labels=chan_labels, total=total, ndf=ndf)
 
-    return model.params, theta, err
+
+def _sf_table(meta, r):
+    """{proc: sf | {era: sf}} of one fit result, fixed processes included."""
+    sfs = OrderedDict()
+    for p, v in zip(r['model'].params, r['theta']):
+        proc, _, era = p.partition(':') if p not in meta['processes'] else (p, '', '')
+        if era:
+            sfs.setdefault(proc, OrderedDict())[era] = round(float(v), 5)
+        else:
+            sfs[proc] = round(float(v), 5)
+    for p, v in r['fixed'].items():
+        sfs[p] = float(v)
+    return sfs
+
+
+def _fit_info(r):
+    model, theta, err, corr, at_bound = r['model'], r['theta'], r['err'], r['corr'], r['at_bound']
+    return OrderedDict([
+        ('channels', r['chan_labels']),
+        ('parameters', {p: ({'value': round(float(v), 5), 'error': None, 'at_bound': b} if b else
+                            {'value': round(float(v), 5), 'error': round(float(e), 5)})
+                        for p, v, e, b in zip(model.params, theta, err, at_bound)}),
+        ('correlation', {p: [round(float(c), 4) if np.isfinite(c) else None for c in row]
+                         for p, row in zip(model.params, corr)}),
+        ('deviance', round(float(r['total']), 3)),
+        ('ndf', int(r['ndf'])),
+    ])
+
+
+def _write_sfs(args, yields_path, meta, results):
+    common = OrderedDict([('yields', str(yields_path)), ('rebin', getattr(args, 'rebin', None)),
+                          ('prior', args.prior), ('mc_stat', not args.no_mc_stat)])
+    if None in results:
+        r = results[None]
+        info = _fit_info(r)
+        doc = OrderedDict([('scale_factors', _sf_table(meta, r)),
+                           ('fit', OrderedDict([('yields', common['yields'])] + list(info.items())
+                                               + [(k, v) for k, v in common.items() if k != 'yields']))])
+    else:
+        # Regions not fitted keep SF 1 (empty global table)
+        doc = OrderedDict([('scale_factors', OrderedDict()),
+                           ('regions', OrderedDict((reg, _sf_table(meta, r)) for reg, r in results.items())),
+                           ('fit', OrderedDict(list(common.items()) + [('per_region', True)] +
+                                               [(reg, _fit_info(r)) for reg, r in results.items()]))])
+    yaml.add_representer(OrderedDict, lambda d, data: d.represent_mapping('tag:yaml.org,2002:map', data.items()))
+    with open(args.output, 'w') as fh:
+        yaml.dump(doc, fh, sort_keys=False, default_flow_style=None, width=120)
+    print(f"\nScale factors written to {args.output}  (use: replot_yields.py {yields_path} --sf {args.output})")
 
 
 def run_fit_and_replot(yields_path, args, formats=None):
@@ -579,7 +640,7 @@ def run_fit_and_replot(yields_path, args, formats=None):
         from replot_yields import replot
         out_dir = args.replot_output or f"{Path(args.output).with_suffix('')}_replot"
         print(f"\nRedrawing the Data/MC plots with the fitted SFs -> {out_dir}/")
-        replot(yields_path, args.output, out_dir, formats=args.replot_format or formats or ['pdf'])
+        replot(yields_path, args.output, out_dir, formats=args.replot_format or formats or ['root'])
     return result
 
 
@@ -597,7 +658,7 @@ def main():
             opts = fit_options(cfg.get('sf_fit'), **overrides)
             opts.output = opts.output or sf_path
             opts.replot_output = opts.replot_output or replot_dir
-            fmt = cfg.get('format', 'pdf')
+            fmt = cfg.get('format', 'root')
             formats = [fmt] if isinstance(fmt, str) else list(fmt)
             yields_path = args.yields or yields_path
         else:

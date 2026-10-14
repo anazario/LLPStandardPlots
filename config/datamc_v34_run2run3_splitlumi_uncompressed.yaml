@@ -26,6 +26,7 @@ sf_fit:
   # makes the fit errors somewhat too small.
   channels: [CustomRegion1:rs, CustomRegion2:rs, CustomRegion3:rs]   # or :ms
   per_era: ["QCD multijets"]        # "all" for separate Run 2 / Run 3 SFs for every process
+  per_region: true                  # the regions have very different selections: fit each on its own
   # fix: {"t#bar{t}+jets": 1.0}     # tt+jets is Run 2 only (no Run 3 sample)
   # prior: 0.5                      # log-normal constraint if processes turn out degenerate
   # rebin: 5                        # merge every 5 bins, or edges: {rs: [0.15, 0.3, 0.5, 1.0]}

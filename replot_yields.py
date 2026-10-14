@@ -47,7 +47,7 @@ def parse_arguments():
     p.add_argument('--sf', default=None, help='YAML file with scale factors (none -> plots as produced)')
     p.add_argument('-o', '--output', default=None,
                    help='Output directory (default: <yields stem>_replot)')
-    p.add_argument('--format', nargs='+', default=['pdf'], choices=['pdf', 'png', 'eps', 'root'])
+    p.add_argument('--format', nargs='+', default=['root'], choices=['pdf', 'png', 'eps', 'root'])
     p.add_argument('--regions', nargs='+', default=None, help='Only these regions')
     p.add_argument('--vars', nargs='+', default=None,
                    help='Only these variables (short names, e.g. isr_risr, or branch names)')
@@ -89,7 +89,7 @@ def var_matches(var, meta, wanted):
     return not wanted or var in wanted or meta['variables'][var]['branch'] in wanted
 
 
-def replot(yields_path, sf_path=None, out_dir=None, formats=('pdf',), regions=None, variables=None,
+def replot(yields_path, sf_path=None, out_dir=None, formats=('root',), regions=None, variables=None,
            eras=None, normalize=False, merge_qcd_gjets=True, table_only=False):
     """Redraw the Data/MC plots of a yields file with the SFs of sf_path (None = no SFs).
 

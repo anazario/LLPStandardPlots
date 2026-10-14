@@ -225,10 +225,13 @@ era when the data allow it. Fit one variable per region — every variable of a 
 contains the same events — and prefer non-overlapping regions. Processes with the same
 shape in all channels are degenerate (large anti-correlation in the printed matrix):
 `--fix "t#bar{t}+jets=1"` them or add a region that separates them. Other options:
-`--channels REGION:VAR ...`, `--float`, `--per-era all`, `--era`, `--prior 0.5`
+`--channels REGION:VAR ...`, `--float`, `--per-era all`, `--per-region`, `--era`, `--prior 0.5`
 (log-normal constraint), `--rebin N` or `--rebin EDGE EDGE ...` (fit coarser bins: SFs only
 fix normalizations, so coarse bins avoid fitting fine shape mismodelling), `--no-mc-stat`.
-SFs are limited to [1e-4, 100]; a parameter the data push to a limit is reported as
+By default all channels are fitted together with one SF per process (× era), which assumes the
+MC is off by the same factor in every region. Regions with very different selections do not
+satisfy that: `--per-region` fits each region on its own and writes the SFs to the `regions:`
+block of the SF file. SFs are limited to [1e-4, 100]; a parameter the data push to a limit is reported as
 `at lower/upper bound` with no error, and the other errors are computed with it held there.
 
 #### Fit from the YAML config (`sf_fit:`)
@@ -244,6 +247,7 @@ output: datamc_v34_run2run3_splitlumi
 sf_fit:
   channels: [CustomRegion1:isr_risr, CustomRegion2:isr_risr]   # default: first var of each unblinded region
   per_era: ["QCD multijets"]       # or "all"
+  per_region: true                 # one fit per region, SFs in the regions: block (default false)
   fix: {"t#bar{t}+jets": 1.0}
   float: [...]                     # default: every process not in fix
   era: [run3]                      # fit only these eras

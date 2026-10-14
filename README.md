@@ -15,6 +15,8 @@ A flexible plotting framework for Long-Lived Particle (LLP) analyses, designed t
 |--------|---------|
 | `main.py` | Main plotting entry point — 1D, 2D, Data/MC, unrolled, CR-vs-SR plots |
 | `fit_plots.py` | Pre/postfit yield plots from Combine `FitDiagnostics` output |
+| `replot_yields.py` | Redraw the Data/MC plots from a yields file with MC scale factors (seconds) |
+| `fit_sfs.py` | Likelihood fit of per-process (× era) MC scale factors to data from a yields file |
 
 ---
 
@@ -47,6 +49,7 @@ A flexible plotting framework for Long-Lived Particle (LLP) analyses, designed t
 | `--unblind` | **WARNING**: Show data in all regions including signal regions | No | False |
 | `--data-flag` | Selection flag used to load data for CR-vs-SR overlay plots | No | — |
 | `--no-merge-qcd-gjets` | Disable automatic QCD+GJets merging in SV regions | No | False |
+| `--yields [FILE]` | Also write the per-process × era yields file (YAML: `yields: true` or a path) | No | `<output>_yields.root` |
 
 *`--signal` is required unless `--input-config` is provided.
 
@@ -179,6 +182,98 @@ python main.py \
 
 ---
 
+## MC scale factors: `--yields`, `replot_yields.py`, `fit_sfs.py`
+
+Run the full dataset once with `--yields` (or `yields: true` in the YAML). Next to the
+plots, `main.py` writes `<output>_yields.root`: for every region and Data/MC variable,
+one `TH1D` per **background process × era** (`bkg__<process>__<run2|run3>`) and the
+data per era (`data__<era>`). The histograms are filled before the files of a stack
+entry are combined and before the QCD + γ+jets merge of the SV regions, and they keep
+the MC stat errors. A `meta` object (JSON) holds the processes, regions, variables and
+per-run luminosities.
+
+```bash
+# 1. Full run (slow, once)
+python main.py --input-config config/datamc_v34_run2run3_splitlumi.yaml --yields
+
+# 2. Fit the SFs (one SF per process; separate Run 2 / Run 3 SFs for QCD); or put the options
+#    in the config's sf_fit: block and run  python fit_sfs.py --config <config>
+python fit_sfs.py datamc_v34_run2run3_splitlumi_yields.root --per-era "QCD multijets" -o sfs.yaml
+
+# 3. Redraw every Data/MC plot with them (seconds); prints data, MC before/after and chi2 per plot
+python replot_yields.py datamc_v34_run2run3_splitlumi_yields.root --sf sfs.yaml
+```
+
+SF files can also be written by hand:
+
+```yaml
+scale_factors:
+  QCD multijets: 1.10                 # all eras
+  W+jets: {run2: 1.05, run3: 0.95}    # per era
+regions:                              # optional per-region overrides
+  CustomRegion2:
+    QCD multijets: 0.8
+```
+
+`replot_yields.py` options: `--regions`, `--vars`, `--era run3` (Run 3 MC vs Run 3 data),
+`--normalize`, `--format pdf png root`, `--table-only`.
+
+`fit_sfs.py` maximizes a binned Poisson likelihood with the MC stat uncertainty profiled
+per bin (Barlow–Beeston-lite); `-2 ln L` at the minimum is a χ²-like goodness of fit.
+The channels default to the first variable of every unblinded region and are split by
+era when the data allow it. Fit one variable per region — every variable of a region
+contains the same events — and prefer non-overlapping regions. Processes with the same
+shape in all channels are degenerate (large anti-correlation in the printed matrix):
+`--fix "t#bar{t}+jets=1"` them or add a region that separates them. Other options:
+`--channels REGION:VAR ...`, `--float`, `--per-era all`, `--era`, `--prior 0.5`
+(log-normal constraint), `--no-mc-stat`.
+
+#### Fit from the YAML config (`sf_fit:`)
+
+Add an `sf_fit:` block to the `main.py` config. A full `main.py` run then also writes
+the yields (implied), fits, and — with `replot: true` — redraws the plots with the SFs.
+To iterate, rerun only the fit and replot (seconds) with `fit_sfs.py --config`, which
+reads the same block and finds the yields file from the config's `output:`. CLI flags
+override the block. Without the block, `main.py` behaves as before.
+
+```yaml
+output: datamc_v34_run2run3_splitlumi
+sf_fit:
+  channels: [CustomRegion1:isr_risr, CustomRegion2:isr_risr]   # default: first var of each unblinded region
+  per_era: ["QCD multijets"]       # or "all"
+  fix: {"t#bar{t}+jets": 1.0}
+  float: [...]                     # default: every process not in fix
+  era: [run3]                      # fit only these eras
+  era_split: true                  # fit Run 2 / Run 3 data separately (default)
+  prior: 0.5                       # log-normal constraint width (default: none)
+  mc_stat: true                    # Barlow-Beeston-lite (default)
+  min_mc: 0
+  replot: true                     # default false: fit + SF file only
+  output: my_sfs.yaml              # default <output>_sfs.yaml
+  replot_output: my_dir            # default <output>_sf
+  replot_format: [pdf, png]        # default: the config's format
+```
+
+```bash
+python main.py --input-config cfg.yaml                    # full run + fit (+ replot)
+python fit_sfs.py --config cfg.yaml                       # fit (+ replot) only, from the saved yields
+python fit_sfs.py --config cfg.yaml --per-era all --replot   # one-off change, YAML untouched
+```
+
+Output, next to the nominal plots:
+
+```
+datamc_v34_run2run3_splitlumi/                 nominal plots (unchanged)
+datamc_v34_run2run3_splitlumi_yields.root      yields file
+datamc_v34_run2run3_splitlumi_sfs.yaml         fitted SFs + fit summary (replot_yields.py --sf)
+datamc_v34_run2run3_splitlumi_sf/<region>/datamc_plots/datamc_<var>_<region>.pdf   replot with SFs
+```
+
+A failing fit (e.g. a misspelled process) does not lose the full run: the plots and
+yields are written first.
+
+---
+
 ## `fit_plots.py` — Pre/Postfit Plots
 
 Produces pre- and postfit yield comparison plots from a Combine `FitDiagnostics` ROOT file. Supports both compressed and uncompressed fit configurations, auto-detected from the fit config YAML.
@@ -239,6 +334,8 @@ class AnalysisConfig:
 ```
 ├── main.py                    # Main CLI entry point
 ├── fit_plots.py               # Pre/postfit plot CLI
+├── replot_yields.py           # Data/MC replot from a yields file with MC SFs
+├── fit_sfs.py                 # Likelihood fit of MC SFs from a yields file
 ├── src/
 │   ├── config.py              # Central configuration (variables, bins, mode configs)
 │   ├── loader.py              # Data loading logic (Uproot → NumPy), parallel workers
@@ -247,6 +344,7 @@ class AnalysisConfig:
 │   ├── style.py               # Style management (cmsstyle wrapper)
 │   ├── selections.py          # Selection definitions and helpers
 │   ├── input_config.py        # YAML input config parsing and group assembly
+│   ├── yields.py              # Per-process × era yields file, scale factors
 │   ├── unrolled.py            # Unrolled binning mathematics
 │   └── utils.py               # Helper functions (name parsing)
 └── tools/

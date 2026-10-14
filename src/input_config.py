@@ -87,6 +87,7 @@ _PARSER_DEFAULTS = {
     'plots': ['all'],
     'analysis_type': 'uncompressed',
     'normalize': False,
+    'yields': None,
 }
 
 
@@ -221,9 +222,13 @@ def load_input_config(yaml_path):
 
     override_keys = (
         'lumi', 'years', 'energy', 'plots', 'vars', 'output', 'tree', 'analysis_type',
-        'isr_pt_cut', 'normalize'
+        'isr_pt_cut', 'normalize', 'yields', 'sf_fit'
     )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
+    if 'sf_fit' in overrides and overrides['sf_fit'] is None:
+        overrides['sf_fit'] = {}  # bare `sf_fit:` -> fit with the defaults
+    if overrides.get('sf_fit') is False:
+        del overrides['sf_fit']
 
     # format: accept "pdf" or ["pdf", "root"] — always store as list
     if 'format' in cfg:

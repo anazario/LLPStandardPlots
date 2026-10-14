@@ -20,6 +20,7 @@ from src.config import AnalysisConfig, AnalysisMode, ModeConfig
 from src.lumi import resolve_run_lumis, print_lumi_table, LumiError
 from src.input_config import (load_input_config, apply_config_to_args,
                                unique_files_from_groups, assemble_grouped_map)
+from src.yields import build_yields, write_yields, default_yields_path
 
 def expand_input_paths(input_paths):
     """
@@ -250,6 +251,42 @@ def _merge_qcd_gjets(bg_data, combine_fn):
     result.update(other)
     return result
 
+def _datamc_vars(analysis_mode, region_type, data_source, flag):
+    """Variables of the data/MC comparison plots of one region (also the yields-file variables)."""
+    # Event-level variables differ by analysis mode
+    if analysis_mode == AnalysisMode.COMPRESSED:
+        datamc_vars = ['rjrIsr_RIsr', 'rjrIsr_PtIsr']
+    else:
+        datamc_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet']
+
+    if region_type == 'sv':
+        hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
+                      'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
+                      'HadronicSV_nTracks']
+        lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
+                      'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
+        # For event flags, only include the relevant SV flavor(s)
+        if data_source == 'event_flag':
+            if "NHad" in flag and "NLep" not in flag:
+                datamc_vars.extend(hadSV_vars)
+            elif "NLep" in flag and "NHad" not in flag:
+                datamc_vars.extend(lepSV_vars)
+            else:
+                datamc_vars.extend(hadSV_vars + lepSV_vars)
+        else:
+            datamc_vars.extend(hadSV_vars + lepSV_vars)
+    elif region_type == 'inclusive-sv':
+        datamc_vars.extend([
+            'InclusiveSV_mass', 'InclusiveSV_dxy', 'InclusiveSV_dxySig',
+            'InclusiveSV_pOverE', 'InclusiveSV_decayAngle', 'InclusiveSV_cosTheta'
+        ])
+    elif region_type == 'pho':
+        # mc_only variables (Gen-level) excluded — not present in data files
+        datamc_vars.append('nBaseLinePhotons')
+        datamc_vars.extend(v for v, c in AnalysisConfig.VARIABLES.items()
+                           if v.startswith('baseLinePhoton_') and not c.get('mc_only', False))
+    return datamc_vars
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Standard Plots CLI')
     
@@ -312,6 +349,9 @@ def parse_arguments():
                        help='Output format: root (default), pdf, png, or eps')
     parser.add_argument('--save-hists', action='store_true', default=False,
                        help='(ROOT format only) Also write individual histogram objects alongside canvases')
+    parser.add_argument('--yields', nargs='?', const=True, default=None, metavar='FILE',
+                       help='Also write the per-process x era yields file for replot_yields.py / fit_sfs.py '
+                            '(default name: <output>_yields.root)')
     parser.add_argument('--no-merge-qcd-gjets', action='store_true', default=False,
                        help='Disable automatic QCD+GJets merging in SV regions (merging is on by default for SV flags)')
 
@@ -551,6 +591,8 @@ def main():
             'region_type': region_type,
             'sig_data': sig_data_map.get(flag, {}),
             'bg_data': bg_data_map.get(flag, {}),
+            'bg_flat': bg_flat_map.get(flag, {}),
+            'data_flat': data_flat_map.get(flag, {}),
             'show_region_label': True,
             'blind_data': not args.unblind and is_blinded_selection(flag),
         })
@@ -567,6 +609,8 @@ def main():
             'region_type': custom_region_types[i] if i < len(custom_region_types) else None,
             'sig_data': custom_sig_data_map.get(custom_region, {}),
             'bg_data': custom_bg_data_map.get(custom_region, {}),
+            'bg_flat': custom_bg_flat_map.get(custom_region, {}),
+            'data_flat': custom_data_flat_map.get(custom_cut_data_region_map.get(i) or '', {}),
             'show_region_label': False,
             'original_cut': original_cut,
             'custom_label': custom_label,
@@ -652,45 +696,8 @@ def main():
             else:
                 blind_data = item['blind_data']
             
-            # Determine variable set based on final state (like datamc_batch_process.py)
-            datamc_vars = []
-            
-            # Event-level variables differ by analysis mode
-            if analysis_mode == AnalysisMode.COMPRESSED:
-                event_level_vars = ['rjrIsr_RIsr', 'rjrIsr_PtIsr']
-            else:
-                event_level_vars = ['rjr_Ms', 'rjr_Rs', 'selCMet']
-            datamc_vars.extend(event_level_vars)
-            
-            if region_type == 'sv':
-                hadSV_vars = ['HadronicSV_mass', 'HadronicSV_dxy', 'HadronicSV_dxySig',
-                              'HadronicSV_pOverE', 'HadronicSV_decayAngle', 'HadronicSV_cosTheta',
-                              'HadronicSV_nTracks']
-                lepSV_vars = ['LeptonicSV_mass', 'LeptonicSV_dxy', 'LeptonicSV_dxySig',
-                              'LeptonicSV_pOverE', 'LeptonicSV_decayAngle', 'LeptonicSV_cosTheta']
-                # For event flags, only include the relevant SV flavor(s)
-                if item['data_source'] == 'event_flag':
-                    if "NHad" in flag and "NLep" not in flag:
-                        datamc_vars.extend(hadSV_vars)
-                    elif "NLep" in flag and "NHad" not in flag:
-                        datamc_vars.extend(lepSV_vars)
-                    else:
-                        datamc_vars.extend(hadSV_vars + lepSV_vars)
-                else:
-                    datamc_vars.extend(hadSV_vars + lepSV_vars)
-            elif region_type == 'inclusive-sv':
-                datamc_vars.extend([
-                    'InclusiveSV_mass', 'InclusiveSV_dxy', 'InclusiveSV_dxySig',
-                    'InclusiveSV_pOverE', 'InclusiveSV_decayAngle', 'InclusiveSV_cosTheta'
-                ])
-            elif region_type == 'pho':
-                # mc_only variables (Gen-level) excluded — not present in data files
-                photon_vars = ['nBaseLinePhotons'] + [
-                    v for v, c in AnalysisConfig.VARIABLES.items()
-                    if v.startswith('baseLinePhoton_') and not c.get('mc_only', False)
-                ]
-                datamc_vars.extend(photon_vars)
-            
+            datamc_vars = _datamc_vars(analysis_mode, region_type, item['data_source'], flag)
+
             for var_key in datamc_vars:
                 conf = AnalysisConfig.VARIABLES.get(var_key)
                 if not conf:
@@ -988,6 +995,58 @@ def main():
     if use_root_file:
         f_out.Close()
         print(f"\nDone! Plots saved to {root_output_path}")
+
+    sf_fit = getattr(args, 'sf_fit', None)
+    if sf_fit is not None and not args.yields:
+        args.yields = True  # the fit runs on the yields file
+    if args.yields:
+        yields_path = default_yields_path(output_path) if args.yields is True else args.yields
+        yield_regions = []
+        for item in all_flags_and_cuts:
+            flag = item['name']
+            yield_regions.append({
+                'name': flag,
+                'label': (resolver.format_sv_label(flag) if item['show_region_label']
+                          else item.get('custom_label')),
+                'region_type': item.get('region_type'),
+                'blind': item['blind_data'],
+                'cut': item.get('original_cut', flag),
+                'vars': _datamc_vars(analysis_mode, item.get('region_type'), item['data_source'], flag),
+                'bg_flat': item['bg_flat'],
+                'data_flat': item['data_flat'],
+            })
+        yield_meta = {
+            'config': args.input_config,
+            'analysis_type': analysis_mode,
+            'energy': args.energy,
+            'lumi': args.lumi,
+            'run_lumis': dict(lumi_info['run_lumis']) if lumi_info else None,
+            'energy_label': lumi_info['energy_label'] if lumi_info else None,
+        }
+        meta, yield_hists = build_yields(yield_regions, bg_groups,
+                                         lumi_info['file_eras'] if lumi_info else None,
+                                         AnalysisConfig.VARIABLES, yield_meta)
+        write_yields(yields_path, meta, yield_hists)
+        print(f"Yields ({len(yield_hists)} region x variable sets, processes: "
+              f"{', '.join(meta['processes'])}; eras: {', '.join(meta['eras'])}) saved to {yields_path}")
+
+    if sf_fit is not None:
+        # sf_fit: {} (or a bare `sf_fit:`) runs the fit with the defaults
+        print("\n=== MC scale-factor fit (sf_fit) ===")
+        try:
+            import fit_sfs  # needs scipy; imported only when a fit is requested
+            opts = fit_sfs.fit_options(sf_fit if isinstance(sf_fit, dict) else None)
+            _, sf_path, replot_dir = fit_sfs.config_paths(output_path, args.yields)
+            opts.output = opts.output or sf_path
+            opts.replot_output = opts.replot_output or replot_dir
+            fit_sfs.run_fit_and_replot(yields_path, opts, output_formats)
+        except Exception as e:
+            # plots and yields are already written; rerun just the fit with fit_sfs.py --config
+            if type(e).__name__ not in ('FitError', 'ValueError'):
+                import traceback
+                traceback.print_exc()
+            print(f"SF fit failed: {e}\n  The plots and {yields_path} are saved; fix the sf_fit: block and rerun "
+                  f"python fit_sfs.py --config {args.input_config or '<config>'}")
     if output_dir:
         fmts = ", ".join(non_root_formats)
         print(f"Done! Plots saved to {output_dir}/ ({fmts})")

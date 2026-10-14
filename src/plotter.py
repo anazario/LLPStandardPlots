@@ -802,24 +802,9 @@ class PlotterDataMC(PlotterBase):
     
     def create_data_mc_comparison(self, data_collection, mc_collection, var_name, var_label, bins, x_min, x_max, blind_data=False, final_state_label=None, suffix="", normalized=False):
         """Create data/MC comparison plot with ratio panel using CMS styling."""
-        canvas_name = f"datamc_{var_name}_{suffix}"
-        if normalized:
-            canvas_name = f"datamc_norm_{var_name}_{suffix}"
-        
         # Ensure our MC colors are properly defined before creating histograms
         self._ensure_mc_colors()
-        
-        # Use shared canvas setup
-        canvas, pad1, pad2 = self._setup_comparison_canvas(canvas_name, x_min, x_max, var_label)
-        
-        # Setup main pad with standard data/MC grid
-        pad1.cd() 
-        pad1.SetGridx(True)
-        pad1.SetGridy(True)
-        pad1.SetLogy(True)
-        pad1.SetLeftMargin(self.style.margin_left+0.04)
-        pad1.SetRightMargin(self.style.margin_right_ratio)
-        
+
         # Create MC histograms
         mc_histograms = []
         mapped_var = self._map_var_name(var_name)
@@ -843,27 +828,7 @@ class PlotterDataMC(PlotterBase):
         if not mc_histograms:
             print(f"  Warning: No MC entries for Data/MC plot variable '{mapped_var}' in {suffix}; skipping.")
             return None
-        
-        # Sort MC histograms by yield (ascending order)
-        mc_histograms.sort(key=lambda x: x[0].Integral())
-        
-        # Create THStack for MC
-        stack = ROOT.THStack("stack", "")
-        for mc_hist, _ in mc_histograms:
-            stack.Add(mc_hist)
-            
-        # Apply normalization after histograms are created but before drawing
-        if normalized:
-            # Get total MC integral for normalization
-            total_mc_integral = 0
-            for mc_hist, _ in mc_histograms:
-                total_mc_integral += mc_hist.Integral()
-            
-            # Normalize each MC histogram by the total MC integral
-            if total_mc_integral > 0:
-                for mc_hist, _ in mc_histograms:
-                    mc_hist.Scale(1.0 / total_mc_integral)
-        
+
         # Create data histogram (if not blinded)
         data_hist = None
         if not blind_data and data_collection:
@@ -881,10 +846,58 @@ class PlotterDataMC(PlotterBase):
                     data_hist.SetMarkerSize(self.style.data_marker_size)
                     data_hist.SetLineWidth(self.style.data_line_width)
 
-                    # Normalize data if requested
-                    if normalized and data_hist.Integral() > 0:
-                        data_hist.Scale(1.0 / data_hist.Integral())
-        
+        return self.draw_data_mc_comparison(mc_histograms, data_hist, var_name, var_label, x_min, x_max,
+                                            final_state_label=final_state_label, suffix=suffix,
+                                            normalized=normalized)
+
+    def draw_data_mc_comparison(self, mc_histograms, data_hist, var_name, var_label, x_min, x_max,
+                                final_state_label=None, suffix="", normalized=False):
+        """Draw the stack + data + ratio canvas from pre-filled histograms.
+
+        mc_histograms : list of (TH1, legend label); colors already set on the histograms.
+        data_hist     : TH1 or None (blinded / no data).
+        """
+        canvas_name = f"datamc_{var_name}_{suffix}"
+        if normalized:
+            canvas_name = f"datamc_norm_{var_name}_{suffix}"
+
+        self._ensure_mc_colors()
+
+        # Use shared canvas setup
+        canvas, pad1, pad2 = self._setup_comparison_canvas(canvas_name, x_min, x_max, var_label)
+
+        # Setup main pad with standard data/MC grid
+        pad1.cd()
+        pad1.SetGridx(True)
+        pad1.SetGridy(True)
+        pad1.SetLogy(True)
+        pad1.SetLeftMargin(self.style.margin_left+0.04)
+        pad1.SetRightMargin(self.style.margin_right_ratio)
+
+        # Sort MC histograms by yield (ascending order)
+        mc_histograms = sorted(mc_histograms, key=lambda x: x[0].Integral())
+
+        # Create THStack for MC
+        stack = ROOT.THStack("stack", "")
+        for mc_hist, _ in mc_histograms:
+            stack.Add(mc_hist)
+
+        # Apply normalization after histograms are created but before drawing
+        if normalized:
+            # Get total MC integral for normalization
+            total_mc_integral = 0
+            for mc_hist, _ in mc_histograms:
+                total_mc_integral += mc_hist.Integral()
+
+            # Normalize each MC histogram by the total MC integral
+            if total_mc_integral > 0:
+                for mc_hist, _ in mc_histograms:
+                    mc_hist.Scale(1.0 / total_mc_integral)
+
+            # Normalize data if requested
+            if data_hist and data_hist.Integral() > 0:
+                data_hist.Scale(1.0 / data_hist.Integral())
+
         # Set axis ranges
         data_max = data_hist.GetMaximum() if data_hist else 0
         stack_max = stack.GetMaximum()

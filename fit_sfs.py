@@ -67,7 +67,10 @@ FIT_DEFAULTS = OrderedDict([
     ('channels', None), ('float_procs', None), ('fix', []), ('per_era', []), ('era', None),
     ('no_era_split', False), ('prior', None), ('no_mc_stat', False), ('min_mc', 0.0),
     ('output', None), ('replot', False), ('replot_output', None), ('replot_format', None),
+    ('rebin', None),
 ])
+
+SF_MIN, SF_MAX = 1e-4, 100.0
 
 
 def parse_arguments(argv=None):
@@ -92,6 +95,9 @@ def parse_arguments(argv=None):
                    help='Log-normal constraint of width SIGMA on every SF (e.g. 0.5); default none')
     p.add_argument('--no-mc-stat', action='store_const', const=True, default=None,
                    help='Ignore the MC statistical uncertainty')
+    p.add_argument('--rebin', nargs='+', type=float, default=None, metavar='N|EDGE',
+                   help='One integer N: merge every N bins (the last bin takes the remainder); several values: new bin edges (each must be '
+                        'an existing edge). Applies to every channel; per variable via the YAML.')
     p.add_argument('--min-mc', type=float, default=None,
                    help='Drop bins whose nominal MC is at or below this value (default 0)')
     p.add_argument('-o', '--output', default=None,
@@ -120,11 +126,12 @@ def fit_options(sf_fit=None, **overrides):
 
     YAML key spellings: channels, float, fix ({proc: sf} or list), per_era, era,
     era_split (bool), prior, mc_stat (bool), min_mc, output, replot (bool),
-    replot_output, replot_format.
+    replot_output, replot_format, rebin (N | [edges] | {var: N | [edges]}).
     """
     block = dict(sf_fit or {})
     unknown = set(block) - {'channels', 'float', 'fix', 'per_era', 'era', 'era_split', 'prior',
-                            'mc_stat', 'min_mc', 'output', 'replot', 'replot_output', 'replot_format'}
+                            'mc_stat', 'min_mc', 'output', 'replot', 'replot_output', 'replot_format',
+                            'rebin'}
     if unknown:
         raise FitError(f"unknown sf_fit key(s): {sorted(unknown)}")
     from_yaml = {
@@ -141,6 +148,7 @@ def fit_options(sf_fit=None, **overrides):
         'replot': block.get('replot'),
         'replot_output': block.get('replot_output'),
         'replot_format': _as_list(block.get('replot_format')),
+        'rebin': block.get('rebin'),
     }
     opts = {}
     for key, default in FIT_DEFAULTS.items():
@@ -151,6 +159,7 @@ def fit_options(sf_fit=None, **overrides):
             val = default
         opts[key] = val
     opts['fix'] = _fix_list(opts['fix'])
+    opts['rebin'] = _normalize_rebin(opts['rebin'])
     opts['per_era'] = opts['per_era'] or []
     return SimpleNamespace(**opts)
 
@@ -192,10 +201,62 @@ def parse_channels(specs, meta, hists):
     return out
 
 
-def hist_arrays(h):
+def _normalize_rebin(rebin):
+    """None | N | [edges] | {var: N | [edges]}; the CLI's [N.0] becomes N."""
+    if isinstance(rebin, (list, tuple)) and len(rebin) == 1:
+        rebin = rebin[0]
+    if isinstance(rebin, float):
+        if not rebin.is_integer():
+            raise FitError(f"rebin {rebin}: a single value must be an integer merge factor")
+        rebin = int(rebin)
+    if isinstance(rebin, int) and rebin < 1:
+        raise FitError(f"rebin {rebin}: the merge factor must be >= 1")
+    if isinstance(rebin, dict):
+        return {k: _normalize_rebin(v) for k, v in rebin.items()}
+    if isinstance(rebin, (list, tuple)):
+        edges = [float(e) for e in rebin]
+        if len(edges) < 2 or any(b <= a for a, b in zip(edges, edges[1:])):
+            raise FitError(f"rebin edges {edges} must be at least two increasing values")
+        return edges
+    return rebin
+
+
+def rebin_for(rebin, var):
+    return rebin.get(var) if isinstance(rebin, dict) else rebin
+
+
+def rebin_matrix(h, spec, label=None):
+    """(new_bins, old_bins) 0/1 matrix merging the bins of h; None = keep the binning.
+    Old bins outside the new edges belong to no new bin (not fitted)."""
+    if spec is None or spec == 1:
+        return None
+    nb = h.GetNbinsX()
+    ax = h.GetXaxis()
+    old = np.array([ax.GetBinLowEdge(i) for i in range(1, nb + 2)])
+    if isinstance(spec, int):
+        groups = [range(i, min(i + spec, nb)) for i in range(0, nb, spec)]
+    else:
+        tol = 1e-6 * (old[-1] - old[0])
+        idx = []
+        for e in spec:
+            j = int(np.argmin(np.abs(old - e)))
+            if abs(old[j] - e) > tol:
+                raise FitError(f"rebin edge {e} of {label or h.GetName()} is not a bin edge "
+                               f"(edges: {', '.join(f'{x:g}' for x in old)})")
+            idx.append(j)
+        groups = [range(a, b) for a, b in zip(idx, idx[1:])]
+    M = np.zeros((len(groups), nb))
+    for k, g in enumerate(groups):
+        M[k, list(g)] = 1.0
+    return M
+
+
+def hist_arrays(h, M=None):
+    """(contents, variances) of the in-range bins, merged by the rebin matrix M."""
     n = h.GetNbinsX()
-    return (np.array([h.GetBinContent(i) for i in range(1, n + 1)]),
-            np.array([h.GetBinError(i) ** 2 for i in range(1, n + 1)]))
+    c = np.array([h.GetBinContent(i) for i in range(1, n + 1)])
+    v = np.array([h.GetBinError(i) ** 2 for i in range(1, n + 1)])
+    return (c, v) if M is None else (M @ c, M @ v)
 
 
 class Model:
@@ -267,16 +328,27 @@ def build_model(meta, hists, channels, args):
     region_count = OrderedDict()
     for region, var in channels:
         region_count[region] = region_count.get(region, 0) + 1
-    nbins_total = sum(len(hist_arrays(hists[c]['data'][next(iter(hists[c]['data']))])[0])
-                      * (len(eras) if split else 1) for c in channels if hists[c]['data'])
+    rebin = getattr(args, 'rebin', None)
+    matrices = {}
+    for c in channels:
+        if hists[c]['data']:
+            first = next(iter(hists[c]['data'].values()))
+            matrices[c] = rebin_matrix(first, rebin_for(rebin, c[1]), f"{c[0]}:{c[1]}")
+    nbins_total = sum(len(hist_arrays(next(iter(hists[c]['data'].values())), matrices[c])[0])
+                      * (len(eras) if split else 1) for c in matrices)
     offset = 0
+    outside_data = 0.0
     for region, var in channels:
         entry = hists[(region, var)]
         if not entry['data']:
             print(f"Warning: {region}:{var} has no data (blinded?); skipped")
             continue
+        M = matrices[(region, var)]
         for era_group in ([[e] for e in eras] if split else [eras]):
-            data = [hist_arrays(h)[0] for e, h in entry['data'].items() if e in era_group]
+            data = [hist_arrays(h, M)[0] for e, h in entry['data'].items() if e in era_group]
+            if M is not None:
+                outside_data += sum(hist_arrays(h)[0].sum() for e, h in entry['data'].items()
+                                    if e in era_group) - sum(d.sum() for d in data)
             if not data:
                 continue
             n = np.sum(data, axis=0)
@@ -285,7 +357,7 @@ def build_model(meta, hists, channels, args):
             for (proc, era), h in entry['bkg'].items():
                 if era not in era_group:
                     continue
-                t, v = hist_arrays(h)
+                t, v = hist_arrays(h, M)
                 row_t = np.zeros(nbins_total)
                 row_v = np.zeros(nbins_total)
                 row_t[offset:offset + nb] = t
@@ -314,6 +386,8 @@ def build_model(meta, hists, channels, args):
     n = np.concatenate(n_all)
     bin_channel = np.array(bin_channel)
 
+    if outside_data > 0.5:
+        print(f"Note: {outside_data:.0f} data events lie outside the rebin edges and are not fitted")
     nominal = T.sum(axis=0)
     keep = nominal > args.min_mc
     dropped_data = n[~keep].sum()
@@ -362,22 +436,43 @@ def numeric_hessian(f, x, rel=1e-4):
 
 
 def fit(model):
+    """
+    Minimize -2 ln L. Returns (theta, cov, singular, converged, at_bound).
+
+    at_bound[p] is 'lower' / 'upper' for a parameter the data push to the edge of
+    [SF_MIN, SF_MAX], else None. The minimum is not a stationary point in those
+    directions, so they get no error: cov is computed from the curvature in the
+    free parameters with the bounded ones held at their bound (NaN rows/columns).
+    """
     x0 = np.ones(len(model.params))
-    bounds = [(1e-4, 100.0)] * len(x0)
+    bounds = [(SF_MIN, SF_MAX)] * len(x0)
     res = optimize.minimize(model.deviance, x0, method='L-BFGS-B', bounds=bounds,
                             options={'maxiter': 10000, 'ftol': 1e-12, 'gtol': 1e-8})
     # polish (L-BFGS-B stops early on flat directions)
     res2 = optimize.minimize(model.deviance, res.x, method='Nelder-Mead',
                              options={'maxiter': 20000, 'xatol': 1e-7, 'fatol': 1e-9})
     best = res2.x if res2.fun < res.fun and np.all(res2.x > 0) else res.x
-    # -2 ln L -> covariance = 2 H^-1
-    H = numeric_hessian(model.deviance, best)
-    try:
-        cov = 2.0 * np.linalg.inv(H)
-        singular = np.any(np.diag(cov) <= 0)
-    except np.linalg.LinAlgError:
-        cov, singular = 2.0 * np.linalg.pinv(H), True
-    return best, cov, singular, res.success
+    best = np.clip(best, SF_MIN, SF_MAX)
+
+    at_bound = [('lower' if v <= SF_MIN * 1.01 else 'upper' if v >= SF_MAX * 0.99 else None) for v in best]
+    free = np.array([b is None for b in at_bound])
+    k = len(best)
+    cov = np.full((k, k), np.nan)
+    singular = False
+    if free.any():
+        def dev_free(xf):
+            x = best.copy()
+            x[free] = xf
+            return model.deviance(x)
+        # -2 ln L -> covariance = 2 H^-1
+        H = numeric_hessian(dev_free, best[free])
+        try:
+            cov_free = 2.0 * np.linalg.inv(H)
+            singular = bool(np.any(np.diag(cov_free) <= 0) or not np.all(np.isfinite(cov_free)))
+        except np.linalg.LinAlgError:
+            cov_free, singular = 2.0 * np.linalg.pinv(H), True
+        cov[np.ix_(free, free)] = cov_free
+    return best, cov, singular, res.success, at_bound
 
 
 def run_fit(yields_path, args):
@@ -388,34 +483,46 @@ def run_fit(yields_path, args):
         raise FitError("no unblinded channel to fit")
 
     model, chan_labels, split, fixed, per_era = build_model(meta, hists, channels, args)
-    theta, cov, singular, ok = fit(model)
-    err = np.sqrt(np.clip(np.diag(cov), 0, None))
-    corr = cov / np.outer(np.where(err > 0, err, 1), np.where(err > 0, err, 1))
+    theta, cov, singular, ok, at_bound = fit(model)
+    err = np.sqrt(np.clip(np.diag(cov), 0, None))  # NaN for parameters at a bound
+    with np.errstate(invalid='ignore', divide='ignore'):
+        corr = cov / np.outer(err, err)
 
     print(f"\nChannels ({'split by era' if split else 'eras summed'}): {', '.join(chan_labels)}")
+    rebin = getattr(args, 'rebin', None)
     print(f"Bins fitted: {len(model.n)}   floated parameters: {len(theta)}"
+          f"{'   rebin: ' + str(rebin) if rebin else ''}"
           f"{'   prior width: ' + str(args.prior) if args.prior else ''}"
           f"{'   MC stat: off' if args.no_mc_stat else ''}")
     if not ok:
         print("Warning: the minimizer did not report convergence")
+    bounded = [p for p, b in zip(model.params, at_bound) if b]
+    if bounded:
+        print(f"Warning: {', '.join(bounded)} hit the SF limit [{SF_MIN:g}, {SF_MAX:g}]: the data want "
+              f"{'it' if len(bounded) == 1 else 'them'} beyond it, usually because the floated processes "
+              f"compensate a shape or normalization mismatch elsewhere. No error is quoted for "
+              f"{'it' if len(bounded) == 1 else 'them'}; the other errors hold "
+              f"{'it' if len(bounded) == 1 else 'them'} fixed at the limit. Consider --fix or --prior.")
     if singular:
-        print("Warning: the Hessian is singular: some parameters are not constrained by the data "
+        print("Warning: the Hessian of the free parameters is singular: some are not constrained by the data "
               "(degenerate shapes). Fix some of them (--fix) or add channels that separate them.")
 
     w = max(len(p) for p in model.params)
     print(f"\n{'parameter':<{w}}  {'SF':>8}  {'error':>8}")
-    for p, v, e in zip(model.params, theta, err):
-        flag = "   <- at bound" if v <= 1.001e-4 or v >= 99.9 else ""
-        print(f"{p:<{w}}  {v:8.4f}  {e:8.4f}{flag}")
+    for p, v, e, b in zip(model.params, theta, err, at_bound):
+        if b:
+            print(f"{p:<{w}}  {v:8.4f}  {'--':>8}   <- at {b} bound, error undefined")
+        else:
+            print(f"{p:<{w}}  {v:8.4f}  {e:8.4f}")
     for p, v in fixed.items():
         print(f"{p:<{w}}  {v:8.4f}  {'fixed':>8}")
 
     if len(theta) > 1:
-        print("\nCorrelation matrix")
+        print("\nCorrelation matrix" + (" (-- = parameter at a bound)" if bounded else ""))
         short = [p[:12] for p in model.params]
         print(" " * (w + 2) + " ".join(f"{s:>12}" for s in short))
         for p, row in zip(model.params, corr):
-            print(f"{p:<{w}}  " + " ".join(f"{c:12.3f}" for c in row))
+            print(f"{p:<{w}}  " + " ".join(f"{c:12.3f}" if np.isfinite(c) else f"{'--':>12}" for c in row))
 
     pre = model.bin_deviance(np.ones(len(theta)))
     post = model.bin_deviance(theta)
@@ -443,9 +550,12 @@ def run_fit(yields_path, args):
             ('fit', OrderedDict([
                 ('yields', str(yields_path)),
                 ('channels', chan_labels),
-                ('parameters', {p: {'value': round(float(v), 5), 'error': round(float(e), 5)}
-                                for p, v, e in zip(model.params, theta, err)}),
-                ('correlation', {p: [round(float(c), 4) for c in row] for p, row in zip(model.params, corr)}),
+                ('parameters', {p: ({'value': round(float(v), 5), 'error': None, 'at_bound': b} if b else
+                                    {'value': round(float(v), 5), 'error': round(float(e), 5)})
+                                for p, v, e, b in zip(model.params, theta, err, at_bound)}),
+                ('correlation', {p: [round(float(c), 4) if np.isfinite(c) else None for c in row]
+                                 for p, row in zip(model.params, corr)}),
+                ('rebin', rebin),
                 ('deviance', round(float(total), 3)),
                 ('ndf', int(ndf)),
                 ('prior', args.prior),

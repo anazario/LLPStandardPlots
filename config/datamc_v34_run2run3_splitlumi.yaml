@@ -28,6 +28,7 @@ sf_fit:
   per_era: ["QCD multijets"]        # "all" for separate Run 2 / Run 3 SFs for every process
   # fix: {"t#bar{t}+jets": 1.0}     # tt+jets is Run 2 only (no Run 3 sample)
   # prior: 0.5                      # log-normal constraint if processes turn out degenerate
+  # rebin: 5                        # merge every 5 bins, or edges: {isr_risr: [0.4, 0.6, 0.8, 1.0]}
   replot: true
 
 background:

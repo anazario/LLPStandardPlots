@@ -226,7 +226,10 @@ contains the same events — and prefer non-overlapping regions. Processes with 
 shape in all channels are degenerate (large anti-correlation in the printed matrix):
 `--fix "t#bar{t}+jets=1"` them or add a region that separates them. Other options:
 `--channels REGION:VAR ...`, `--float`, `--per-era all`, `--era`, `--prior 0.5`
-(log-normal constraint), `--no-mc-stat`.
+(log-normal constraint), `--rebin N` or `--rebin EDGE EDGE ...` (fit coarser bins: SFs only
+fix normalizations, so coarse bins avoid fitting fine shape mismodelling), `--no-mc-stat`.
+SFs are limited to [1e-4, 100]; a parameter the data push to a limit is reported as
+`at lower/upper bound` with no error, and the other errors are computed with it held there.
 
 #### Fit from the YAML config (`sf_fit:`)
 
@@ -248,6 +251,8 @@ sf_fit:
   prior: 0.5                       # log-normal constraint width (default: none)
   mc_stat: true                    # Barlow-Beeston-lite (default)
   min_mc: 0
+  rebin: 5                         # merge every 5 bins; or edges [0.4, 0.6, 0.8, 1.0] (must be existing
+                                   # edges); or per variable {isr_risr: 5, isr_ptisr: [300, 600, 1000, 2800]}
   replot: true                     # default false: fit + SF file only
   output: my_sfs.yaml              # default <output>_sfs.yaml
   replot_output: my_dir            # default <output>_sf

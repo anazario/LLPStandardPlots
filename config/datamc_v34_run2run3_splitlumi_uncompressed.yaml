@@ -1,0 +1,65 @@
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v3
+
+# Uncompressed version of datamc_v34_run2run3_splitlumi.yaml.
+# No `lumi:` -> each MC file is scaled by the luminosity of its own run, summed
+# over these data years (src/lumi.py). Run 2 MC is RunIISummer20UL18 (2016-18),
+# Run 3 MC is Run3Summer23[BPix] (2022-25); the era comes from the file name.
+years: all
+analysis_type: uncompressed
+plots: [ratio]
+format: pdf
+output: datamc_v34_run2run3_splitlumi_uncompressed
+
+flags:
+  - cut: "PROMPT_PHO_CR_UNCOMPRESSED_GE1"
+    region_type: pho
+  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15)"
+    region_type: sv
+  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500)"
+    region_type: sv
+
+# MC scale-factor fit (see README). A full run also writes the yields; iterate on
+# the fit alone with:  python fit_sfs.py --config config/datamc_v34_run2run3_splitlumi_uncompressed.yaml
+# Regions: CustomRegion1 = prompt photon, CustomRegion2 = hadronic SV, CustomRegion3 = leptonic SV
+sf_fit:
+  # One variable per region; these regions can share events (photon + SV), which
+  # makes the fit errors somewhat too small.
+  channels: [CustomRegion1:rs, CustomRegion2:rs, CustomRegion3:rs]   # or :ms
+  per_era: ["QCD multijets"]        # "all" for separate Run 2 / Run 3 SFs for every process
+  # fix: {"t#bar{t}+jets": 1.0}     # tt+jets is Run 2 only (no Run 3 sample)
+  # prior: 0.5                      # log-normal constraint if processes turn out degenerate
+  # rebin: 5                        # merge every 5 bins, or edges: {rs: [0.15, 0.3, 0.5, 1.0]}
+  replot: true
+
+background:
+  - name: QCD multijets
+    files:
+      - QCD_HT*_RunIISummer20UL18__SVIPM100_v34__llpStandardPlots.root
+      - QCD-4Jets_HT-*_Run3Summer23BPix__SVIPM100_v34__llpStandardPlots.root
+  - name: W+jets
+    files:
+      - WJetsToLNu_HT-*_RunIISummer20UL18__SVIPM100_v34__llpStandardPlots.root
+      - WtoLNu-4Jets_MLNu-*_Rn3Sm23__SVHPM100_v34__llpStandardPlots.root
+  - name: Z+jets
+    files:
+      - ZJetsToNuNu_HT-*_RunIISummer20UL18__SVIPM100_v34__llpStandardPlots.root
+      - Zto2Nu-4Jets_HT-*_Run3Summer23__SVIPM100_v34__llpStandardPlots.root
+  # Run 2 only: not processed for Run 3
+  - name: t#bar{t}+jets
+    files:
+      - TTJets_RunIISummer20UL18__SVIPM100_v34__llpStandardPlots.root
+  - name: "#gamma+jets"
+    files:
+      - GJets_HT-*_RunIISummer20UL18__SVHPM100_v2_v34__llpStandardPlots.root
+      - GJ-4Jets_HT-*_Run3Summer23__SVHPM100_v34__llpStandardPlots.root
+
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpStandardPlots.root
+      - JetMET_Run2022*__llpStandardPlots.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpStandardPlots.root
+      - JetMET[01]_Run2024*__llpStandardPlots.root
+      - JetMET[01]_Run2025*__llpStandardPlots.root
+      - kucmsntuple_JetMET_R25_*__llpStandardPlots.root

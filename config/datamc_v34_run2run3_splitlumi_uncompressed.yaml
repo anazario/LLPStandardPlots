@@ -13,16 +13,17 @@ output: datamc_v34_run2run3_splitlumi_uncompressed
 flags:
   - cut: "PROMPT_PHO_CR_UNCOMPRESSED_GE1"
     region_type: pho
-  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15)"
+  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15) & (nBaseLinePhotons == 0)"
     region_type: sv
-  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500)"
+  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500) & (nBaseLinePhotons == 0)"
     region_type: sv
 
 # MC scale-factor fit (see README). A full run also writes the yields; iterate on
 # the fit alone with:  python fit_sfs.py --config config/datamc_v34_run2run3_splitlumi_uncompressed.yaml
 # Regions: CustomRegion1 = prompt photon, CustomRegion2 = hadronic SV, CustomRegion3 = leptonic SV
 sf_fit:
-  # One variable per region; these regions can share events (photon + SV), which
+  # One variable per region; the photon and SV regions are disjoint, but the two SV
+  # regions can share events (hadronic + leptonic SV), which
   # makes the fit errors somewhat too small.
   channels: [CustomRegion1:rs, CustomRegion2:rs, CustomRegion3:rs]   # or :ms
   per_era: ["QCD multijets"]        # "all" for separate Run 2 / Run 3 SFs for every process

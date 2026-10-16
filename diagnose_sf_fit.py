@@ -104,7 +104,7 @@ def run_audit(cfgs, opts, cache_dir):
     key = None
     if cache_dir:
         import hashlib, json
-        key = hashlib.sha1(json.dumps([sorted(files.items()), sorted(region_cuts.items()), ids,
+        key = hashlib.sha1(json.dumps([di.RECORD_FORMAT, sorted(files.items()), sorted(region_cuts.items()), ids,
                                        [(f, os.path.getmtime(f) if os.path.exists(f) else None) for f in files]],
                                       default=str).encode()).hexdigest()
         path = Path(cache_dir) / f"audit_{key[:16]}.pkl"
@@ -222,13 +222,13 @@ def audit_summary(cfgs, audit, adatas):
 # Loading with cache                                                          #
 # --------------------------------------------------------------------------- #
 def load_cached(acfg, audit, opts, cache_dir):
-    fp = di.config_fingerprint(acfg)
+    ids = [tuple(opts.event_id_branches)] if opts.event_id_branches else None
+    fp = di.config_fingerprint(acfg, ids)
     path = Path(cache_dir) / f"{acfg['name']}_{fp[:16]}.pkl" if cache_dir else None
     if path and path.exists():
         print(f"[{acfg['name']}] histograms and records from cache {path}")
         with open(path, 'rb') as fh:
             return pickle.load(fh)
-    ids = [tuple(opts.event_id_branches)] if opts.event_id_branches else None
     adata = di.load_analysis(acfg, audit_view(audit, acfg['name']), workers=opts.workers, verbose=opts.verbose,
                              id_branches=ids)
     if path:
@@ -241,13 +241,14 @@ def load_cached(acfg, audit, opts, cache_dir):
 # Summary canvases                                                            #
 # --------------------------------------------------------------------------- #
 def summary_canvases(out, results):
-    labels, lr_p, gof_s, gof_i, n_id = [], [], [], [], []
+    labels, lr_p, lr_x, gof_s, gof_i, n_id = [], [], [], [], [], []
     for an, A in results['analyses'].items():
         for kind, R in A.get('regions', {}).items():
             for var in (R.get('fits', {}).get('native') or {}):
                 labels.append(f"{an[:4]} {kind[:3]} {var}")
                 l = R['lrt']['native'].get(var)
-                lr_p.append(l['p'] if l else None)
+                lr_p.append(l['p'] if l and l['interpretable'] else None)
+                lr_x.append(l['p'] if l and not l['interpretable'] else None)
                 f = R['fits']['native'][var]
                 gof_s.append(f['shared'].get('p_gof') if f['shared'].get('status') == 'ok' else None)
                 gof_i.append(f['independent'].get('p_gof') if f['independent'].get('status') == 'ok' else None)
@@ -256,9 +257,12 @@ def summary_canvases(out, results):
     if labels:
         out.write("summary", cv.bar_canvas("p-values: shared vs independent era SFs (LRT) and GoF", labels,
                                            [("LRT p (shared vs indep)", lr_p, None, ROOT.kBlue + 1),
-                                            ("GoF p shared", gof_s, None, ROOT.kRed + 1),
-                                            ("GoF p independent", gof_i, None, ROOT.kGreen + 2)],
-                                           "p-value", logy=True, ymin=1e-12, ymax=10), "pvalues_overview")
+                                            ("LRT p, NOT interpretable", lr_x, None, ROOT.kGray + 1),
+                                            ("GoF p shared (asympt.)", gof_s, None, ROOT.kRed + 1),
+                                            ("GoF p independent (asympt.)", gof_i, None, ROOT.kGreen + 2)],
+                                           "p-value", logy=True, ymin=1e-12, ymax=10,
+                                           notes=["grey: Wilks conditions fail (bound / singular / misfit)"]),
+                  "pvalues_overview")
         out.write("summary", cv.bar_canvas("expected number of identified SFs (shared era, Asimov)", labels,
                                            [("identified SFs", n_id, None, ROOT.kBlue + 1)], "count", ymin=0),
                   "identified_overview")
@@ -266,12 +270,29 @@ def summary_canvases(out, results):
         for kind, R in A.get('regions', {}).items():
             rk = R.get('ranking') or []
             if rk:
+                labels = [r['var'] + ("" if r.get('eligible') else " (not eligible)") for r in rk]
+                rec = R.get('recommended_var')
+                note = [f"recommended: {rec}" if rec else
+                        f"recommendation inconclusive (diagnostic focus {R.get('focus_var')})",
+                        "order: eligible first, then common-selection rank"]
                 out.write("summary", cv.bar_canvas(
-                    f"variable ranking {an} {kind} (lower = better)", [r['var'] for r in rk],
-                    [("median expected #sigma_{rel} (major, shared)", [r.get('median_rel_major_shared') for r in rk],
+                    f"variable ranking {an} {kind}: identifiability, common vs native selection (lower = better)",
+                    labels,
+                    [("median exp. #sigma_{rel} major, common", [r.get('median_rel_major_shared_common') for r in rk],
                       None, ROOT.kBlue + 1),
-                     ("max |#rho| (shared)", [r.get('max_corr_shared') for r in rk], None, ROOT.kRed + 1)], "",
-                    ymin=0, notes=[f"recommended: {R.get('recommended_var')}"]), f"ranking_{an}_{kind}")
+                     ("median exp. #sigma_{rel} major, native", [r.get('median_rel_major_shared') for r in rk],
+                      None, ROOT.kAzure + 7),
+                     ("max |#rho|, common", [r.get('max_corr_shared_common') for r in rk], None, ROOT.kRed + 1),
+                     ("max |#rho|, native", [r.get('max_corr_shared') for r in rk], None, ROOT.kOrange + 7)], "",
+                    ymin=0, notes=note), f"ranking_{an}_{kind}")
+                out.write("summary", cv.bar_canvas(
+                    f"variable ranks {an} {kind} (1 = best)", labels,
+                    [("rank, common selection", [r.get('rank_common') for r in rk], None, ROOT.kBlue + 1),
+                     ("rank, native selection", [r.get('rank_native') for r in rk], None, ROOT.kRed + 1),
+                     ("final rank", [r.get('rank') for r in rk], None, ROOT.kBlack),
+                     ("identified SFs, common", [r.get('n_identified_shared_common') for r in rk], None, ROOT.kGreen + 2),
+                     ("identified SFs, native", [r.get('n_identified_shared') for r in rk], None, ROOT.kMagenta + 1)],
+                    "", ymin=0, notes=note), f"ranks_{an}_{kind}")
 
 
 # --------------------------------------------------------------------------- #
@@ -308,9 +329,13 @@ def main(argv=None):
     not_executed = []
     if not refs:
         not_executed.append("regression against existing yields files (pass --reference-yields CONFIG=YIELDS)")
-    if not all(a['event_ids'] for a in adatas.values()):
-        not_executed.append("event-identifier-based duplicate-data check: no (run, lumi, event) branches; "
-                            "region overlaps and the validation partition use in-pass event keys instead")
+    for an, a in adatas.items():
+        s = a['id_summary']['data']
+        if s['files_in_pass']:
+            not_executed.append(
+                f"[{an}] {s['files_in_pass']} of {s['files_in_pass'] + s['files_event_id']} data files have no "
+                f"(run, lumi, event) branches: duplicate-data check and event-identity-safe partition not possible "
+                f"for their events (in-pass keys used; cross-file uniqueness not established)")
     results['audit'] = {'files': file_rows, 'issues': issues, 'not_executed': not_executed}
 
     rout = cv.RootOut(out_dir / 'sf_diagnostics.root')
@@ -326,6 +351,8 @@ def main(argv=None):
         if ref:
             res['reference'] = di.compare_reference_yields(a, ref)
         results['analyses'][c['name']] = res
+    issues_run = [x for an, A in results['analyses'].items() for x in sd.completion_issues(an, A)]
+    results['completion'] = OrderedDict(status='complete' if not issues_run else 'incomplete', issues=issues_run)
     summary_canvases(rout, results)
     st.shutdown_workers()
     n_canvases = rout.n
@@ -348,9 +375,10 @@ def main(argv=None):
         fit={'sf_bounds': [__import__('fit_sfs').SF_MIN, __import__('fit_sfs').SF_MAX], 'mc_stat': 'Barlow-Beeston lite',
              'min_mc': 0.0},
         thresholds=OrderedDict((k, v) for k, v in st.THRESHOLDS.items()),
+        toy_ensembles=st.TOY_ENSEMBLES,
         settings={'toys': opts.toys, 'toys_degenerate': opts.toys_degenerate, 'toys_extended': opts.toys_extended, 'seed': opts.seed, 'workers': opts.workers,
                   'regions': opts.regions, 'cache': str(cache_dir) if cache_dir else None,
-                  'seed_rule': 'crc32(analysis|region|var|era_model[|ext]) mixed with --seed'},
+                  'seed_rule': 'crc32(analysis|region|var|era_model[|ext|ensemble]) mixed with --seed'},
         canvases=n_canvases, runtime_s=round(time.time() - t0, 1))
 
     rp.write_json(out_dir / 'sf_diagnostics_results.json', results)
@@ -363,12 +391,19 @@ def main(argv=None):
     for an, A in results['analyses'].items():
         for kind, R in A['regions'].items():
             a = R.get('assessment', {})
-            print(f"  {an:<13} {kind:<9} observable {a.get('recommended_observable')}, binning "
+            obs = a.get('recommended_observable') or f"inconclusive (focus {a.get('diagnostic_focus')})"
+            print(f"  {an:<13} {kind:<9} observable {obs}, binning "
                   f"{a.get('recommended_binning')}, Run2/Run3 {a.get('era_model')}; "
                   f"limitations: {'; '.join(a.get('limitations', [])) or 'none flagged'}")
-    print(f"done in {time.time() - t0:.0f} s")
+    comp = results['completion']
+    if comp['issues']:
+        print(f"\nINCOMPLETE: {len(comp['issues'])} required stud{'y' if len(comp['issues']) == 1 else 'ies'} "
+              f"failed or produced no result:")
+        for x in comp['issues']:
+            print(f"  - {x}")
+    print(f"{'done' if not comp['issues'] else 'finished with failures'} in {time.time() - t0:.0f} s")
     return results
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main()['completion']['status'] == 'complete' else 1)

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
+PARTITION_META = ('event_ids', 'event_identity_safe', 'partition_key', 'id_events')   # as study.PARTITION_META
+
 
 def jsonable(o):
     if isinstance(o, dict):
@@ -107,7 +109,7 @@ def tables(results):
                     for p, e in R.get('era_ratio', {}).get(sel, {}).get(var, {}).items():
                         T['era_tests'].append(dict(base, selection=sel, var=var, test=f'run3-run2 {p}', **e))
             for r in R.get('ranking', []):
-                T['ranking'].append(dict(base, **r))
+                T['ranking'].append(dict(base, recommended=r['var'] == R.get('recommended_var'), **r))
             for var, ems in R.get('stability', {}).items():
                 for em, sc in ems.items():
                     if sc.get('status') != 'ok':
@@ -123,15 +125,29 @@ def tables(results):
                         for i, p in enumerate(b.get('params', [])):
                             T['binning'].append(dict(base, var=var, era_model=em, scheme=s, param=p, sf=b['theta'][i],
                                                      err=b['err'][i], deviance=b.get('deviance'), ndf=b.get('ndf'), **q))
-            for tag, src in (('screen', R.get('toys_screen', {})), ('extended', {R.get('recommended_var'): R.get('toys_extended') or {}})):
-                for var, ems in src.items():
-                    for em, ty in (ems or {}).items():
-                        for p, v in (ty.get('per_param') or {}).items():
-                            T['toys'].append(dict(base, kind=tag, var=var, era_model=em, param=p, n_toys=ty['n_toys'],
-                                                  seed=ty['seed'], theta_true=ty['theta_true'][ty['params'].index(p)],
-                                                  **{k: v[k] for k in ('mean', 'std', 'bias', 'pull_mean', 'pull_width',
-                                                                       'coverage_68', 'frac_at_bound')},
-                                                  p_gof_toys=ty.get('p_gof_toys'), frac_singular=ty.get('frac_singular')))
+            toy_sets = [('screen', var, em, ty) for var, ems in (R.get('toys_screen') or {}).items()
+                        for em, ty in (ems or {}).items()]
+            toy_sets += [('extended', R.get('focus_var'), em, ty) for em, ens in (R.get('toys_extended') or {}).items()
+                         for ty in ens.values()]
+            for tag, var, em, ty in toy_sets:
+                common = dict(base, kind=tag, var=var, era_model=em, ensemble=ty.get('ensemble'), status=ty.get('status'),
+                              n_toys=ty.get('n_toys'), n_valid=ty.get('n_valid'), n_failed=ty.get('n_failed'),
+                              n_not_converged=ty.get('n_not_converged'), seed=ty.get('seed'),
+                              injection=ty.get('injection_source'), stress_test=ty.get('stress_test'))
+                if not ty.get('per_param'):
+                    T['toys'].append(dict(common, reason=ty.get('reason')))
+                    continue
+                g = ty.get('gof') or {}
+                for p, v in ty['per_param'].items():
+                    T['toys'].append(dict(common, param=p, theta_true=ty['theta_true'][ty['params'].index(p)],
+                                          **{k: v[k] for k in ('mean', 'std', 'bias', 'rel_bias', 'n_pulls', 'pull_mean',
+                                                               'pull_mean_err', 'pull_width', 'coverage_68',
+                                                               'coverage_68_err', 'frac_at_bound')},
+                                          frac_singular=ty.get('frac_singular'), frac_any_bound=ty.get('frac_any_bound'),
+                                          gof_calibrated=g.get('calibrated'), p_gof_toys=ty.get('p_gof_toys'),
+                                          toy_dev_mean_over_ndf=g.get('mean_over_ndf'),
+                                          toy_frac_asym_p_lt_0p05=g.get('frac_asymptotic_p_below_0p05'),
+                                          toy_ks_p_vs_chi2=g.get('ks_p_vs_chi2_ndf'), closure_ok=ty.get('closure_ok')))
             for var, ems in R.get('validation', {}).items():
                 for em, vv in ems.items():
                     for tgt, v in vv.items():
@@ -140,13 +156,15 @@ def tables(results):
                                 T['validation'].append(dict(base, source_var=var, era_model=em, target=tgt, era=era,
                                                             object_level=v.get('object_level'), **x))
             for var, ems in (R.get('partition') or {}).items():
-                if not isinstance(ems, dict) or var in ('event_ids', 'partition_key'):
+                if not isinstance(ems, dict) or var in PARTITION_META:
                     continue
                 for em, row in ems.items():
                     for p, z in (row.get('compat_z') or {}).items():
                         T['partition'].append(dict(base, var=var, era_model=em, param=p, z_A_minus_B=z))
             for r in (R.get('veto') or {}).get('rows', []):
                 T['veto'].append(dict(base, **r))
+            for r in (R.get('veto') or {}).get('excluded_missing_branch', []):
+                T['veto'].append(dict(base, status='excluded: nBaseLinePhotons missing', **r))
             for k, w in (R.get('weights') or {}).items():
                 T['weights'].append(dict(base, sample=k, **w))
     return T
@@ -211,12 +229,22 @@ def write_html(path, results):
          "<span class='sup'>supported</span>, <span class='dis'>disfavored</span> and "
          "<span class='inc'>inconclusive</span> are kept apart.</p>"]
 
+    comp = results.get('completion') or {}
+    if comp.get('issues'):
+        h.append("<div class='card'><b class='dis'>Incomplete run: required studies failed or produced no result</b>"
+                 + _list(comp['issues'], 'dis') + "</div>")
+    elif comp:
+        h.append("<p class='muted'>All required studies produced results.</p>")
+
     # overview table
     rows = []
     for an, A in results.get('analyses', {}).items():
         for kind, R in A.get('regions', {}).items():
             a = R.get('assessment', {})
-            rows.append([_e(an), _e(kind), _e(a.get('recommended_observable')), _e(a.get('recommended_binning')),
+            obs = a.get('recommended_observable') or (
+                f"inconclusive (focus: {a.get('diagnostic_focus')})" if a.get('diagnostic_focus') else
+                R.get('status') or 'inconclusive')
+            rows.append([_e(an), _e(kind), _e(obs), _e(a.get('recommended_binning')),
                          _e(a.get('era_model')), _e(len(a.get('constrained_backgrounds', []))),
                          _e(len(a.get('backgrounds_needing_treatment', []))),
                          _e("; ".join(a.get('model_adequacy', [])) or "no inadequacy flagged")])
@@ -233,8 +261,12 @@ def write_html(path, results):
         h.append("<div class='card'><b>Not executed</b>" + _list(au['not_executed']) + "</div>")
 
     for an, A in results.get('analyses', {}).items():
+        ids = A.get('id_summary') or {}
+        idtxt = "; ".join(f"{k}: {v.get('files_event_id', 0)} files with (run, lumi, event), "
+                          f"{v.get('files_in_pass', 0)} with in-pass keys only" for k, v in ids.items() if isinstance(v, dict))
         h.append(f"<h2>{_e(an)} analysis</h2><p class='muted'>{_e(A.get('config'))}; MC luminosity per run "
-                 f"{_e(A.get('run_lumis'))}; event identifiers: {'yes' if A.get('event_ids') else 'no (in-pass keys)'}</p>")
+                 f"{_e(A.get('run_lumis'))}; event identifiers: {_e(idtxt or 'n/a')}; data partition "
+                 f"{'event-identity-safe' if A.get('event_ids') else 'NOT event-identity-safe (cross-file uniqueness not established)'}</p>")
         if A.get('record_check'):
             h.append("<p class='dis'>Record / loader mismatch:</p>" + _list([str(x) for x in A['record_check']]))
         if A.get('excluded'):
@@ -249,7 +281,16 @@ def write_html(path, results):
         for kind, R in A.get('regions', {}).items():
             h.append(region_html(an, kind, R))
 
-    h.append("<h2>Thresholds and settings</h2>")
+    ens = P.get('toy_ensembles') or {}
+    if ens:
+        h.append("<h2>Toy ensembles</h2><p>Toys are injected at the observed best fit (never moved; an invalid "
+                 "injection is refused). Statistics use converged fits; pulls and coverage exclude singular fits and "
+                 "parameters at a bound; failure fractions are reported separately. Only the BB-lite and MC-template "
+                 "ensembles give a GoF p-value of the observed data.</p>"
+                 + _table(["ensemble", "definition"], [[_e(k), _e(v)] for k, v in ens.items()]))
+
+    h.append("<h2>Thresholds and settings</h2><p class='muted'>The thresholds are screening heuristics of this "
+             "diagnostic, not universal statistical criteria.</p>")
     h.append(_table(["name", "value"], [[_e(k), _e(v)] for k, v in P.get('thresholds', {}).items()]))
     h.append(_table(["setting", "value"], [[_e(k), _e(v)] for k, v in P.get('settings', {}).items()]))
     h.append("</body></html>")
@@ -260,16 +301,29 @@ def region_html(an, kind, R):
     a = R.get('assessment', {})
     h = [f"<h3>{_e(an)} · {_e(kind)}</h3>"]
     if R.get('status'):
-        return h[0] + f"<p class='inc'>{_e(R['status'])}</p>"
+        return h[0] + f"<p class='{'dis' if R.get('error') else 'inc'}'>{_e(R['status'])}</p>"
     h.append("<div class='card'>")
-    h.append(f"<p><b>Recommended observable:</b> {_e(a.get('recommended_observable'))} · "
-             f"<b>binning:</b> {_e(a.get('recommended_binning'))} {_e(a.get('recommended_binning_spec') or '')} · "
-             f"<b>Run 2 / Run 3:</b> {_e(a.get('era_model'))}</p>")
+    rec = a.get('recommended_observable')
+    h.append(f"<p><b>Recommended observable:</b> "
+             + (_e(rec) if rec else f"<span class='inc'>inconclusive</span> (diagnostics shown for "
+                                    f"{_e(a.get('diagnostic_focus'))}, not a recommendation)")
+             + f" · <b>binning:</b> {_e(a.get('recommended_binning'))} {_e(a.get('recommended_binning_spec') or '')} · "
+             f"<b>Run 2 / Run 3:</b> {_e(a.get('era_model'))}"
+             + (f" (diagnostics use {_e(a.get('era_model_used'))})" if a.get('era_model') == 'inconclusive' else "")
+             + "</p>")
     h.append("<b class='sup'>Supported</b>" + _list(a.get('supported'), 'sup'))
     h.append("<b class='dis'>Disfavored</b>" + _list(a.get('disfavored'), 'dis'))
     h.append("<b class='inc'>Inconclusive</b>" + _list(a.get('inconclusive'), 'inc'))
-    h.append("<b>Independently constrained backgrounds</b>" + _list(a.get('constrained_backgrounds')))
+    h.append("<b>Common vs native selection</b>" + _list(a.get('selection_comparison')))
+    h.append("<b>Independently constrained backgrounds</b> <span class='muted'>(identified, not degenerate, toy "
+             "closure ok, and the model fits)</span>" + _list(a.get('constrained_backgrounds')))
+    if a.get('precise_but_model_inadequate'):
+        h.append("<b class='inc'>Small nominal errors, but the model does not fit (not counted as constrained)</b>"
+                 + _list(a['precise_but_model_inadequate'], 'inc'))
     h.append("<b>Backgrounds needing fixing, constraints or investigation</b>" + _list(a.get('backgrounds_needing_treatment')))
+    if a.get('toys'):
+        h.append("<b>Toys</b> <span class='muted'>(injected at the observed best fit; ensembles defined below)</span>"
+                 + _list(a['toys']))
     if a.get('weak_variants'):
         h.append("<b>Weak-process variants</b>" + _list(a['weak_variants']))
     h.append("<b>Correlations (|rho| &gt; 0.5)</b>" + _list(a.get('correlations')))
@@ -283,17 +337,23 @@ def region_html(an, kind, R):
     # ranking
     rk = R.get('ranking', [])
     if rk:
-        h.append(_table(["rank", "var", "identified (shared)", "median σrel major", "max |ρ|", "identified (indep)",
-                         "GoF p shared", "GoF p indep", "pathologies / instability"],
-                        [[_e(r.get('rank')), _e(r['var']),
+        h.append("<p><b>Observable ranking</b> <span class='muted'>" + _e((R.get('ranking_detail') or {}).get('criteria', ''))
+                 + "</span></p>")
+        h.append(_table(["rank", "var", "eligible", "rank common", "identified common (shared)", "median σrel common",
+                         "max |ρ| common", "least separated pair (Hellinger)", "rank native", "identified native",
+                         "median σrel native", "GoF p shared (asym. / toys)", "not eligible because"],
+                        [[_e(r.get('rank')), _e(r['var']), _e('yes' if r.get('eligible') else 'no'), _e(r.get('rank_common')),
+                          f"{_e(r.get('n_identified_shared_common'))}/{_e(r.get('n_params_shared_common'))}",
+                          _f(r.get('median_rel_major_shared_common')), _f(r.get('max_corr_shared_common')),
+                          f"{_e(r.get('least_separated_pair_common'))} ({_f(r.get('min_major_hellinger_common'))})",
+                          _e(r.get('rank_native')),
                           f"{_e(r.get('n_identified_shared'))}/{_e(r.get('n_params_shared'))}",
-                          _f(r.get('median_rel_major_shared')), _f(r.get('max_corr_shared')),
-                          f"{_e(r.get('n_identified_indep'))}/{_e(r.get('n_params_indep'))}",
-                          _f(r.get('p_gof_shared')), _f(r.get('p_gof_indep')),
-                          _e("; ".join((r.get('pathologies') or []) + (r.get('unstable') or [])) or r.get('reason', ''))]
+                          _f(r.get('median_rel_major_shared')),
+                          f"{_f(r.get('p_gof_shared'))} / {_f(r.get('p_gof_toys_shared'))}",
+                          _e("; ".join(r.get('ineligible') or []) or r.get('reason', ''))]
                          for r in rk]))
-    # composition of the recommended variable
-    rec = R.get('recommended_var')
+    # composition of the recommended (or focus) variable
+    rec = R.get('recommended_var') or R.get('focus_var')
     comp = (R.get('composition', {}).get('native', {}) or {}).get(rec) if rec else None
     if comp:
         rows = []
@@ -329,6 +389,21 @@ def region_html(an, kind, R):
                          "events w/o branch"], rows) +
                  _table(["era", "data/MC before", "data/MC after"],
                         [[_e(e), _f(v['ratio_before'], "{:.3f}"), _f(v['ratio_after'], "{:.3f}")] for e, v in dm.items()]))
+        if veto.get('veto_violations'):
+            h.append(f"<p class='dis'>{_e(veto['veto_violations'])} selected events have nBaseLinePhotons != 0</p>")
+        if veto.get('excluded_missing_branch'):
+            h.append("<p class='inc'>Files without nBaseLinePhotons (excluded from the vetoed region, not counted as "
+                     "removed; the production loader would let them pass the veto):</p>"
+                     + _list([f"{Path(x['file']).name} ({x['process']}, {x['era']}): {x['events_before']} events"
+                              for x in veto['excluded_missing_branch']], 'inc'))
+    dup = R.get('duplicates') or {}
+    if dup:
+        h.append("<p><b>Data duplicates (run, lumi, event):</b> " + _e(
+            dup.get('reason') if dup.get('status') == 'unavailable' else
+            f"{dup.get('duplicated_keys')} duplicated keys ({dup.get('duplicated_keys_across_files')} across files) "
+            f"among {dup.get('events')} events with identifiers")
+            + (f"; <span class='inc'>{_e(dup['files_without_ids'])} data files ({_e(dup['events_without_ids'])} "
+               f"events) without identifiers not checked</span>" if dup.get('files_without_ids') else "") + "</p>")
     mr = R.get('missing_run3')
     if mr and mr.get('processes'):
         h.append(f"<p><b>Run-2-only processes</b> ({_e(', '.join(mr['processes']))}): Run 2 fraction "

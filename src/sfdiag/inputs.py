@@ -45,6 +45,9 @@ DEFAULT_ID_BRANCHES = [('run', 'lumi', 'event'), ('evtRun', 'evtLumi', 'evtNum')
                        ('runNumber', 'lumiBlock', 'eventNumber')]
 
 REC = 'evt__'   # prefix of the record keys added to the loader's per-file data
+# Version of the cached analysis data (records, partition rule, histograms); bump on any change
+# so that caches written by an older diagnostic are not reused.
+RECORD_FORMAT = 3
 
 
 class DiagInputError(Exception):
@@ -223,6 +226,12 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
 
     MC sums are of the raw evtFillWgt; the caller multiplies by the luminosity x group
     scale of the config at hand.
+
+    Steps 0-6 follow DataLoader._load_one_file / _extract_values: MET and weight cuts, the
+    baseline flags and the trigger OR restricted to the branches present in the file, then
+    the mode validation. The order of the steps is for display only (the loader applies them
+    together). Steps "7 ... approx." are object-count proxies of the regions, NOT the region
+    selections; the exact region yields come from the loader records (cutflow steps 8.x).
     """
     import uproot
     try:
@@ -319,8 +328,8 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
                 m &= trig
             add("5 MET trigger OR", m, w)
             base = m.copy()
-            # compressed mode requirement
-            if 'rjrIsr_nSVisObjects' in keys:
+            # compressed mode requirement (the loader also needs the ISR plane branches)
+            if all(b in keys for b in ModeConfig.COMPRESSED['branches']):
                 mc = base & (col('rjrIsr_nSVisObjects') > 0)
             else:
                 mc = np.zeros(n, dtype=bool)
@@ -343,9 +352,10 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
                 nh = col('SV_nHadronic') if 'SV_nHadronic' in keys else np.zeros(n)
                 nl = col('SV_nLeptonic') if 'SV_nLeptonic' in keys else np.zeros(n)
                 npho = col('nBaseLinePhotons') if 'nBaseLinePhotons' in keys else np.full(n, -1)
-                add(f"7 {tag}: >=1 hadronic SV", mm & (nh >= 1), w)
-                add(f"7 {tag}: >=1 leptonic SV", mm & (nl >= 1), w)
-                add(f"7 {tag}: >=1 photon, no SV", mm & (npho >= 1) & (nh == 0) & (nl == 0), w)
+                # object-count proxies only; the exact region selections are the 8.x steps (records)
+                add(f"7 {tag}: approx. >=1 hadronic SV", mm & (nh >= 1), w)
+                add(f"7 {tag}: approx. >=1 leptonic SV", mm & (nl >= 1), w)
+                add(f"7 {tag}: approx. >=1 photon, no SV", mm & (npho >= 1) & (nh == 0) & (nl == 0), w)
         if not is_data and W['wmax'] == -np.inf:
             W['wmax'] = W['wmin'] = 0.0
         out['weights'] = W if not is_data else {}
@@ -463,9 +473,13 @@ def records_of(fdata):
 def common_mask(rec, mode, isr_pt_cut):
     """Events passing the cuts of *every* candidate variable (the common selection)."""
     if mode == AnalysisMode.UNCOMPRESSED:
-        ms_cut = AnalysisConfig.VARIABLES['rjr_Rs']['cross_cut'][2]
-        rs_cut = AnalysisConfig.VARIABLES['rjr_Ms']['cross_cut'][2]
-        return (rec['ms'] > ms_cut) & (rec['rs'] > rs_cut)
+        # every cross cut of the loader (Rs plotted with the Ms cut, Ms with the Rs cut)
+        m = np.ones(len(rec['w']), dtype=bool)
+        for b in ('rjr_Ms', 'rjr_Rs'):
+            other, op, thr = AnalysisConfig.VARIABLES[b]['cross_cut']
+            vals = rec[RECORD_VALUE[other]]
+            m &= vals > thr if op == '>' else vals < thr
+        return m
     m = rec['risr'] >= AnalysisConfig.ISR_RISR_CUT
     if isr_pt_cut is not None:
         m &= rec['ptisr'] >= isr_pt_cut
@@ -501,14 +515,19 @@ def _mix64(x):
     return x ^ (x >> np.uint64(31))
 
 
-def event_hash(path, rec, use_ids, salt="sfdiag"):
+def has_event_ids(rec):
+    return all(k in rec for k in ('run', 'lumi', 'event'))
+
+
+def event_hash(path, rec, use_ids=True, salt="sfdiag"):
     """
-    64-bit event hash: of (run, lumi, event) when available (the same event gets the same
-    hash in every file and region), else of the in-pass key (file, chunk, row), which is
-    the same for every region of one loader pass over a file.
+    64-bit event hash: of (run, lumi, event) when this file's records have them (the same
+    event gets the same hash in every file and region, so a data event present in two input
+    files falls into the same partition), else of the in-pass key (file, chunk, row), which is
+    the same for every region of one loader pass over that file but not across files.
     """
     with np.errstate(over='ignore'):
-        if use_ids and all(k in rec for k in ('run', 'lumi', 'event')):
+        if use_ids and has_event_ids(rec):
             seed = np.uint64(int.from_bytes(hashlib.blake2b(salt.encode(), digest_size=8).digest(), 'little'))
             x = _mix64(rec['run'].astype(np.uint64) ^ seed)
             x = _mix64(x ^ rec['lumi'].astype(np.uint64))
@@ -524,7 +543,7 @@ def in_pass_key(rec):
     return rec['chunk'].astype(np.int64) * (1 << 32) + rec['row'].astype(np.int64)
 
 
-def partition_of(path, rec, use_ids, salt="sfdiag"):
+def partition_of(path, rec, use_ids=True, salt="sfdiag"):
     """Reproducible event-level 0/1 partition (lowest bit of the event hash)."""
     return (event_hash(path, rec, use_ids, salt) & np.uint64(1)).astype(np.int8)
 
@@ -646,20 +665,17 @@ def load_analysis(acfg, audit, workers=1, verbose=False, id_branches=None, data=
             if miss and not any(e['file'] == f and e['region'] == r for e in excluded):
                 excluded.append({'region': r, 'file': f, 'missing': miss})
 
-    return build_analysis_data(acfg, bg_flat, data_flat, excluded, id_branches_found=_ids_found(audit))
+    return build_analysis_data(acfg, bg_flat, data_flat, excluded)
 
 
-def _ids_found(audit):
-    return {f: a.get('id_branches') for f, a in audit.items()}
-
-
-def build_analysis_data(acfg, bg_flat, data_flat, excluded=(), id_branches_found=None):
+def build_analysis_data(acfg, bg_flat, data_flat, excluded=()):
     """
     Histogram sets and records from the loader's per-file data of every region.
 
       native : build_yields() on the loader output (exactly the production histograms)
       common : candidate variables filled from the records with the common selection
-      halves : the common histograms split by the event-level partition (A = 0, B = 1)
+      halves : the common histograms split by the event-level partition (A = 0, B = 1), keyed
+               per file by (run, lumi, event) when that file has them, else by the in-pass key
     """
     mode = acfg['mode']
     V = AnalysisConfig.VARIABLES
@@ -686,8 +702,8 @@ def build_analysis_data(acfg, bg_flat, data_flat, excluded=(), id_branches_found
         var_meta.setdefault(v, c)
 
     files = acfg['files']
-    use_ids = bool(id_branches_found) and all(id_branches_found.get(f) for f in files) if id_branches_found else False
     records = OrderedDict()
+    id_strategy = OrderedDict()   # file -> 'event_id' | 'in_pass' (per file, not global)
     objects = OrderedDict()
     common = OrderedDict()
     halves = {'A': OrderedDict(), 'B': OrderedDict()}
@@ -702,14 +718,16 @@ def build_analysis_data(acfg, bg_flat, data_flat, excluded=(), id_branches_found
                     continue
                 if kind == 'mc':
                     rec['w'] = rec['w'] * files[f]['scale']
-                rec['part'] = partition_of(f, rec, use_ids)
+                rec['part'] = partition_of(f, rec)
+                id_strategy[f] = 'event_id' if has_event_ids(rec) else 'in_pass'
                 records[r][kind][f] = rec
-                # object (candidate) multiplicity of the SV / photon variables
+                # object (candidate) multiplicity of the SV / photon variables: entries per event
+                # entering that variable (the loader's per-variable N-1 plane cuts applied)
                 for vk in ('HadronicSV_mass', 'LeptonicSV_mass', 'baseLinePhoton_WTimeSig'):
                     if vk in fd:
                         o = objects[r].setdefault(vk, {'entries': 0.0, 'events': 0.0})
                         o['entries'] += len(fd[vk])
-                        o['events'] += len(rec['w'])
+                        o['events'] += int(native_mask(rec, mode, acfg['isr_pt_cut'], vk).sum())
         # common-selection + partition histograms of the candidates
         for b in cands:
             c = V[b]
@@ -736,6 +754,7 @@ def build_analysis_data(acfg, bg_flat, data_flat, excluded=(), id_branches_found
                 for e_ in (ent, entA, entB):
                     e_['data'] = OrderedDict()
 
+    id_summary = id_strategy_summary(records, id_strategy, files)
     procs = meta['processes']
     eras = [e for e in ('run2', 'run3', 'all') if e in meta['eras']] + \
            [e for e in meta['eras'] if e not in ('run2', 'run3', 'all')]
@@ -745,9 +764,28 @@ def build_analysis_data(acfg, bg_flat, data_flat, excluded=(), id_branches_found
         'processes': procs, 'eras': eras, 'run_lumis': acfg['run_lumis'], 'lumi_total': acfg['lumi_total'],
         'energy_label': acfg['energy_label'], 'candidates': [V[b]['name'] for b in cands],
         'native': native, 'common': common, 'halves': halves, 'records': records, 'objects': objects,
-        'var_meta': var_meta, 'files': files, 'excluded': list(excluded), 'event_ids': use_ids,
+        'var_meta': var_meta, 'files': files, 'excluded': list(excluded),
+        # event-identity-safe: every selected data file has (run, lumi, event)
+        'event_ids': id_summary['data_event_identity_safe'], 'id_strategy': id_strategy, 'id_summary': id_summary,
         'region_vars': {reg['name']: [V[v]['name'] for v in reg['vars'] if v in V] for reg in regions},
     }
+
+
+def id_strategy_summary(records, id_strategy, files):
+    """Files and selected events per event-identifier strategy, for MC and data and per region."""
+    out = OrderedDict()
+    for kind in ('mc', 'data'):
+        fs = [f for f in id_strategy if files[f]['is_data'] == (kind == 'data')]
+        row = OrderedDict(files_event_id=sum(id_strategy[f] == 'event_id' for f in fs),
+                          files_in_pass=sum(id_strategy[f] == 'in_pass' for f in fs), events_by_region=OrderedDict())
+        for r, rr in records.items():
+            ev = {'event_id': 0, 'in_pass': 0}
+            for f, rec in rr[kind].items():
+                ev[id_strategy[f]] += len(rec['w'])
+            row['events_by_region'][r] = ev
+        out[kind] = row
+    out['data_event_identity_safe'] = bool(out['data']['files_event_id'] > 0 and out['data']['files_in_pass'] == 0)
+    return out
 
 
 def check_records(adata):
@@ -821,9 +859,10 @@ def compare_reference_yields(adata, ref_path, region_map=None):
     return rows
 
 
-def config_fingerprint(acfg):
-    """Hash of the resolved inputs (files + cuts + lumis + cut constants) for the cache."""
+def config_fingerprint(acfg, id_branches=None):
+    """Hash of the resolved inputs (files + cuts + lumis + cut constants + record format) for the cache."""
     payload = {
+        'record_format': RECORD_FORMAT, 'id_branches': [list(t) for t in (id_branches or DEFAULT_ID_BRANCHES)],
         'files': sorted(acfg['files']), 'regions': {r: rc['cut'] for r, rc in acfg['regions'].items()},
         'lumis': {f: m['lumi'] for f, m in acfg['files'].items()}, 'mode': acfg['mode'],
         'isr': acfg['isr_pt_cut'], 'consts': [AnalysisConfig.MET_CUT, AnalysisConfig.EVT_WGT_CUT,

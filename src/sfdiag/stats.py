@@ -14,6 +14,7 @@ Conventions
 
 import contextlib
 import io
+import zlib
 from collections import OrderedDict
 
 import numpy as np
@@ -22,7 +23,8 @@ from scipy import stats as sps
 import fit_sfs
 from src.yields import normalize_label
 
-# Thresholds used by the classifications (also written to the provenance block)
+# Screening thresholds of the classifications (also written to the provenance block). They are
+# analysis heuristics chosen for this diagnostic, not universal statistical criteria.
 THRESHOLDS = OrderedDict([
     ('ident_rel', 0.25),      # sigma_rel below which a parameter counts as identified
     ('weak_rel', 0.5),        # sigma_rel above which a parameter counts as weakly constrained
@@ -35,6 +37,10 @@ THRESHOLDS = OrderedDict([
     ('prior_sigma', 0.5),     # log-normal width of the weak-process prior variant
     ('toy_bias', 0.3),        # |mean pull| flagged as biased
     ('toy_width', (0.8, 1.25)),  # pull-width range counted as correct coverage
+    ('cond_max', 1e3),        # Asimov correlation-matrix condition number above which templates are near-degenerate
+    ('gauss_tol', 0.2),       # max relative difference of the Gaussian-information and Hessian errors
+    ('support_relerr_frac', 0.25),  # fraction of fitted bins with MC rel. error > relerr_high tolerated
+    ('support_data_frac', 0.02),    # fraction of data in bins without MC tolerated
 ])
 
 
@@ -93,6 +99,7 @@ def composition(entry, processes, eras):
                 'bins_filled': int(pos.sum()),
                 'bins_sparse': int(((ne < THRESHOLDS['neff_low']) & pos).sum()),
                 'bins_negative': int((t < 0).sum()),
+                'negative_bin_sum': float(t[t < 0].sum()),
                 'bin_fraction': (np.divide(t, tot, out=np.zeros_like(t), where=tot > 0)).tolist(),
                 'bin_neff': ne.tolist(),
             }
@@ -104,54 +111,86 @@ def composition(entry, processes, eras):
             'bins_relerr_high': int(((relerr > THRESHOLDS['relerr_high']) & (tot > 0)).sum()),
             'total_relerr': np.where(np.isfinite(relerr), relerr, -1).tolist(),
             'total_neff': neff(tot, tot2).tolist(),
+            # under/overflow: not fitted (fit_sfs uses the in-range bins only)
+            'mc_out_of_range': float(sum(h['w'][0] + h['w'][-1] for (p, e), h in entry['bkg'].items()
+                                         if era == 'total' or e == era)),
         }
         if data is not None:
             unsup = (data > 0) & (tot <= 0)
             info.update({'data': float(data.sum()), 'data_over_mc': float(data.sum() / ytot) if ytot > 0 else None,
-                         'data_bins_no_mc': int(unsup.sum()), 'data_events_no_mc': float(data[unsup].sum())})
+                         'data_bins_no_mc': int(unsup.sum()), 'data_events_no_mc': float(data[unsup].sum()),
+                         'data_out_of_range': float(sum(h['w'][0] + h['w'][-1] for e, h in entry['data'].items()
+                                                        if era == 'total' or e == era))})
         out[era] = info
     return out
 
 
 def _norm(t, v):
+    """
+    (p, var_p, reason) of a template as a probability distribution, or (None, None, reason)
+    when it is not one: the shape distances below assume non-negative contents with a
+    positive integral. Signed (negative-weight) bins are never clipped away.
+
+    var_p is the first-order (delta-method) variance of p_i = t_i / S with S = sum t, which
+    includes the normalization correlation: (v_i (1 - 2 p_i) + p_i^2 sum_j v_j) / S^2.
+    """
+    t = np.asarray(t, dtype=float)
+    v = np.asarray(v, dtype=float)
     s = t.sum()
-    if s <= 0:
-        return None, None
-    return np.clip(t, 0, None) / s, v / s ** 2
+    if not np.isfinite(s) or s <= 0:
+        return None, None, 'non-positive integral'
+    if np.any(t < 0):
+        return None, None, f"{int((t < 0).sum())} negative bin(s) (signed MC weights)"
+    p = t / s
+    return p, np.clip((v * (1 - 2 * p) + p ** 2 * v.sum()) / s ** 2, 0, None), None
 
 
 def shape_compare(t1, v1, t2, v2):
-    """Hellinger distance and a chi2 shape-compatibility test of two templates (MC stat only)."""
-    p, vp = _norm(t1, v1)
-    q, vq = _norm(t2, v2)
+    """
+    Hellinger distance and a chi2 shape-compatibility test of two templates (MC stat only).
+    Both need non-negative templates with a positive integral; otherwise status 'unavailable'
+    with the reason (the signed yields stay in the composition table).
+    """
+    p, vp, why1 = _norm(t1, v1)
+    q, vq, why2 = _norm(t2, v2)
     if p is None or q is None:
-        return {'hellinger': None, 'chi2': None, 'ndf': 0, 'p': None}
+        reason = "; ".join(f"template {k}: {w}" for k, w in ((1, why1), (2, why2)) if w)
+        return {'status': 'unavailable', 'reason': reason, 'hellinger': None, 'chi2': None, 'ndf': 0, 'p': None}
     h = float(np.sqrt(max(0.0, 1.0 - np.sum(np.sqrt(p * q)))))
     m = (p > 0) | (q > 0)
     var = vp + vq
     ok = m & (var > 0)
     chi2 = float(np.sum((p[ok] - q[ok]) ** 2 / var[ok]))
     ndf = int(ok.sum()) - 1
-    return {'hellinger': h, 'chi2': chi2, 'ndf': ndf, 'p': float(sps.chi2.sf(chi2, ndf)) if ndf > 0 else None}
+    return {'status': 'ok', 'reason': None, 'hellinger': h, 'chi2': chi2, 'ndf': ndf,
+            'p': float(sps.chi2.sf(chi2, ndf)) if ndf > 0 else None}
 
 
 def similarity(entry, processes, eras=None):
-    """Pairwise shape comparison of the (era-summed) process templates."""
+    """Pairwise shape comparison of the (era-summed) process templates (NaN = unavailable)."""
     T, _ = entry_templates(entry, eras)
     tv = OrderedDict()
     for p in processes:
         ks = [k for k in T if k[0] == p]
         if ks:
             tv[p] = (sum(T[k][0] for k in ks), sum(T[k][1] for k in ks))
+    unavailable = OrderedDict()
+    for p, (t, v) in tv.items():
+        why = _norm(t, v)[2]
+        if why:
+            unavailable[p] = why
     names = [p for p, (t, _) in tv.items() if t.sum() > 0]
     H = np.full((len(names), len(names)), np.nan)
     P = np.full((len(names), len(names)), np.nan)
     for i, a in enumerate(names):
         for j, b in enumerate(names):
-            r = shape_compare(*tv[a], *tv[b]) if i != j else {'hellinger': 0.0, 'p': 1.0}
+            if i == j:
+                r = {'hellinger': 0.0, 'p': 1.0} if a not in unavailable else {'hellinger': None, 'p': None}
+            else:
+                r = shape_compare(*tv[a], *tv[b])
             H[i, j] = r['hellinger'] if r['hellinger'] is not None else np.nan
             P[i, j] = r['p'] if r['p'] is not None else np.nan
-    return {'processes': names, 'hellinger': H.tolist(), 'p_same_shape': P.tolist()}
+    return {'processes': names, 'hellinger': H.tolist(), 'p_same_shape': P.tolist(), 'unavailable': unavailable}
 
 
 def era_shape_compat(entry, processes):
@@ -344,9 +383,14 @@ def fit_channel(meta, hists, region, var, era_model='shared', fix=(), rebin=None
 
 
 def identifiability(res):
-    """Per-parameter flags of an observed fit."""
+    """
+    Per-parameter flags of an observed fit. The Hessian error is only meaningful for a
+    converged fit with a regular (non-singular) Hessian and the parameter away from its
+    bound; otherwise the parameter is never 'identified' (it is 'weak' instead).
+    """
     out = OrderedDict()
     corr = res['corr']
+    regular = not res['singular'] and res.get('converged', True)
     for i, p in enumerate(res['params']):
         v, e, b = res['theta'][i], res['err'][i], res['at_bound'][i]
         row = np.abs(np.where(np.isfinite(corr[i]), corr[i], 0.0))
@@ -355,8 +399,9 @@ def identifiability(res):
         rel = float(e / v) if np.isfinite(e) and v > 0 else np.inf
         out[p] = {'rel_err': rel, 'at_bound': b, 'max_corr': float(row[j]) if j is not None else 0.0,
                   'max_corr_with': res['params'][j] if j is not None else None,
-                  'identified': bool(b is None and rel < THRESHOLDS['ident_rel'] and not res['singular']),
-                  'weak': bool(b is not None or rel > THRESHOLDS['weak_rel'] or res['singular'])}
+                  'regular': bool(regular and b is None),
+                  'identified': bool(regular and b is None and rel < THRESHOLDS['ident_rel']),
+                  'weak': bool(not regular or b is not None or rel > THRESHOLDS['weak_rel'])}
     return out
 
 
@@ -377,15 +422,36 @@ def sf_lookup(res, processes, eras):
 
 
 def lrt(restricted, full):
-    """Likelihood-ratio test of nested fits (deviance difference ~ chi2(delta k))."""
+    """
+    Likelihood-ratio test of nested fits: delta(-2lnL) ~ chi2(delta k) under the restricted
+    model (Wilks). The p-value is only interpretable ('interpretable': True) when both fits
+    converged with regular Hessians, no parameter sits at an SF bound (Wilks needs interior
+    points), delta(-2lnL) >= 0 (a negative value means a failed minimization of the larger
+    model) and the larger model itself fits (GoF p >= gof_p: with both models misspecified
+    the deviance difference is not chi2-distributed). 'caveats' lists the failed conditions.
+    """
     if restricted.get('status') != 'ok' or full.get('status') != 'ok':
         return None
     d = restricted['deviance'] - full['deviance']
     k = len(full['params']) - len(restricted['params'])
     if k <= 0:
         return None
+    caveats = []
+    for lab, r in (('restricted', restricted), ('full', full)):
+        if not r.get('converged', True):
+            caveats.append(f"{lab} fit did not converge")
+        if r.get('singular'):
+            caveats.append(f"{lab} fit has a singular Hessian")
+        bnd = [p for p, b in zip(r['params'], r['at_bound']) if b]
+        if bnd:
+            caveats.append(f"{lab} fit has {', '.join(bnd)} at an SF bound")
+    if d < -1e-6 * max(1.0, abs(restricted['deviance'])):
+        caveats.append(f"delta(-2lnL) = {d:.3g} < 0: the larger model was not minimized")
+    if full.get('p_gof') is not None and full['p_gof'] < THRESHOLDS['gof_p']:
+        caveats.append(f"the larger model does not fit (GoF p = {full['p_gof']:.2g}): both models misspecified")
     return {'delta_deviance': float(d), 'delta_k': int(k), 'p': float(sps.chi2.sf(max(d, 0.0), k)),
-            'aic_full_minus_restricted': float(-d + 2 * k)}
+            'aic_full_minus_restricted': float(-d + 2 * k),
+            'interpretable': not caveats, 'caveats': caveats}
 
 
 def era_ratio_tests(res):
@@ -466,20 +532,34 @@ def asimov_information(model, theta0=None):
     cond = float(eig[-1] / eig[0]) if eig[0] > 1e-12 else np.inf
     with np.errstate(invalid='ignore', divide='ignore'):
         rel = sig / theta0
+        # cross-check of the two approximations: Hessian of the production deviance vs I = G^T W G
+        gauss_sig = np.where(prof > 0, 1.0 / np.sqrt(prof), np.inf)
+        gauss_diff = np.abs(sig / gauss_sig - 1.0)
+    gauss_max = float(np.nanmax(gauss_diff)) if P and np.any(np.isfinite(gauss_diff)) else np.inf
+    singular = singular or not finite
+    near_degenerate = bool(cond > THRESHOLDS['cond_max'])
     return OrderedDict(
-        params=list(model.params), sigma=sig, rel=rel, cov=cov, corr=corr, singular=singular or not finite,
+        params=list(model.params), sigma=sig, rel=rel, cov=cov, corr=corr, singular=singular,
         eigenvalues=eig, weakest_direction=OrderedDict((model.params[i], float(vec[i, 0])) for i in range(P)),
-        condition_number=cond, info_unprofiled=unprof, info_profiled=prof,
+        condition_number=cond, near_degenerate=near_degenerate, info_unprofiled=unprof, info_profiled=prof,
         separation_fraction=np.divide(prof, unprof, out=np.zeros(P), where=unprof > 0),
+        gauss_sigma=gauss_sig, gauss_hessian_max_rel_diff=gauss_max,
+        gauss_consistent=bool(gauss_max <= THRESHOLDS['gauss_tol']),
+        # regular asymptotics (errors from the curvature) are only trusted when all hold
+        regular=bool(not singular and not near_degenerate and gauss_max <= THRESHOLDS['gauss_tol']),
         per_bin_profiled=per_bin, per_bin_unprofiled=(G ** 2 / var[:, None]).T,
         bin_channel=list(model.bin_channel),
     )
 
 
 def asimov_summary(info, processes_major):
-    """Scalars used for the variable ranking."""
+    """
+    Scalars used for the variable ranking. With a singular expected Hessian no parameter
+    counts as identified (the curvature errors are undefined).
+    """
     rel = np.asarray(info['rel'])
-    ident = [p for p, r in zip(info['params'], rel) if np.isfinite(r) and r < THRESHOLDS['ident_rel']]
+    ident = [] if info['singular'] else \
+        [p for p, r in zip(info['params'], rel) if np.isfinite(r) and r < THRESHOLDS['ident_rel']]
     major = [i for i, p in enumerate(info['params']) if p.partition(':')[0] in processes_major or p in processes_major]
     corr = np.abs(np.asarray(info['corr'], dtype=float))
     if corr.size > 1:
@@ -490,7 +570,9 @@ def asimov_summary(info, processes_major):
     med = float(np.median(rel[major])) if major else (float(np.median(rel)) if len(rel) else np.inf)
     return {'n_identified': len(ident), 'identified': ident, 'n_params': len(rel),
             'median_rel_major': med, 'max_rel_major': float(np.max(rel[major])) if major else None,
-            'max_corr': max_corr, 'condition_number': info['condition_number'], 'singular': info['singular']}
+            'max_corr': max_corr, 'condition_number': info['condition_number'], 'singular': info['singular'],
+            'near_degenerate': info['near_degenerate'], 'regular': info['regular'],
+            'gauss_hessian_max_rel_diff': info['gauss_hessian_max_rel_diff']}
 
 
 # --------------------------------------------------------------------------- #
@@ -532,8 +614,8 @@ def _params_supported(model, keep):
     return True
 
 
-def _submodel(model, keep=None, T=None, n=None):
-    sub = copy_model(model, T=T, n=n, keep=keep)
+def _submodel(model, keep=None, T=None, n=None, V=None):
+    sub = copy_model(model, T=T, V=V, n=n, keep=keep)
     if isinstance(model, SelectivePriorModel):
         sub = SelectivePriorModel(sub, [model.params[i] for i in model.prior_idx], model.prior_sigma)
     return sub
@@ -664,67 +746,185 @@ def binning_variants(entry, var, nbins):
 # --------------------------------------------------------------------------- #
 # Toys                                                                        #
 # --------------------------------------------------------------------------- #
-def run_toys(res, n_toys, seed, theta_true=None, fluctuate_templates=True):
+TOY_ENSEMBLES = OrderedDict([
+    ('conditional',
+     "templates fixed at their nominal MC values (treated as the truth), data ~ Poisson(nu(theta_true)). "
+     "Tests the estimator given the MC. With MC stat on, the BB-lite terms add uncertainty that is "
+     "not fluctuated here: pull widths < 1 (over-coverage) are expected, and the deviance distribution "
+     "is too narrow to calibrate the observed GoF."),
+    ('bb_lite',
+     "data ~ Poisson(nu(theta_true)) and, per bin, the total MC rescaled by one factor g_i ~ Gamma with "
+     "mean 1 and relative width d_i = sqrt(sum s^2 V) / nu (all processes coherently): the generative "
+     "model of the Barlow-Beeston-lite likelihood (one nuisance per bin on the total MC). Model-consistent "
+     "ensemble for closure, coverage and GoF calibration of the production likelihood."),
+    ('mc_template',
+     "data ~ Poisson(nu(theta_true)) and every process template fluctuated independently per bin, "
+     "T'_ki ~ Gamma with mean T_ki and variance V_ki (the actual sampling of independent MC samples). "
+     "Checks the BB-lite approximation; bins with T_ki <= 0 or V_ki <= 0 are not fluctuated (counted)."),
+])
+
+
+def _gamma_scale(rng, mean, var):
+    """Gamma draws with the given mean (> 0) and variance (> 0), elementwise (no clipping needed)."""
+    k = mean ** 2 / var
+    return rng.gamma(k, var / mean)
+
+
+def toy_injection(model, theta_true):
     """
-    Pseudo-experiments from the fitted model itself: data ~ Poisson(sum_k s_k(theta_true) T_k),
-    and (with MC stat on) templates T_k ~ Gauss(T_k, V_k) clipped at zero, refitted with the
-    production fit. theta_true defaults to the observed best fit (kept inside [0.05, 20]).
+    Validation of an injection point against the production likelihood: finite values inside
+    the SF bounds [fit_sfs.SF_MIN, fit_sfs.SF_MAX]. Bins with a negative expectation (signed
+    templates) are generated with mean 0, as the likelihood floors nu at 1e-12; their number
+    is reported.
     """
-    model = res['model']
-    rng = np.random.default_rng(seed)
-    P = len(model.params)
-    tt = np.clip(np.asarray(res['theta'] if theta_true is None else theta_true, dtype=float), 0.05, 20.0)
+    tt = np.asarray(theta_true, dtype=float)
+    out = OrderedDict(theta_true=tt.tolist(), valid=True, reasons=[])
+    if tt.shape != (len(model.params),):
+        out['valid'] = False
+        out['reasons'].append(f"{tt.size} values for {len(model.params)} parameters")
+        return out, None
+    if not np.all(np.isfinite(tt)):
+        out['valid'] = False
+        out['reasons'].append("non-finite injected value")
+    out_of_bounds = [p for p, v in zip(model.params, tt) if not (fit_sfs.SF_MIN <= v <= fit_sfs.SF_MAX)]
+    if out_of_bounds:
+        out['valid'] = False
+        out['reasons'].append(f"outside the SF bounds [{fit_sfs.SF_MIN:g}, {fit_sfs.SF_MAX:g}]: "
+                              + ", ".join(out_of_bounds))
+    if not out['valid']:
+        return out, None
     mu = model.scales(tt) @ model.T
-    mu = np.maximum(mu, 0.0)
+    out['bins_negative_expectation'] = int((mu < 0).sum())
+    out['negative_expectation_sum'] = float(mu[mu < 0].sum())
+    out['near_bound'] = [p for p, v in zip(model.params, tt)
+                         if v <= fit_sfs.SF_MIN * 1.01 or v >= fit_sfs.SF_MAX * 0.99]
+    return out, np.maximum(mu, 0.0)
+
+
+def _toy_models(model, tt, mu, n_toys, rng, ensemble):
+    """Pseudo-experiment models of one ensemble (see TOY_ENSEMBLES)."""
+    gen = OrderedDict()
+    s = model.scales(tt)
+    nu = s @ model.T
+    d2 = np.where(nu > 0, (s ** 2) @ model.V / np.where(nu > 0, nu, 1.0) ** 2, 0.0)
+    fluct = (d2 > 0) & (nu > 0) if model.mc_stat else np.zeros(len(nu), bool)
+    if ensemble == 'bb_lite':
+        gen['bins_mc_fluctuated'] = int(fluct.sum())
+        gen['bins_mc_not_fluctuated'] = int((~fluct).sum())
+    elif ensemble == 'mc_template':
+        ok = (model.T > 0) & (model.V > 0)
+        gen['cells_fluctuated'] = int(ok.sum())
+        gen['cells_not_fluctuated'] = int((~ok & (model.T != 0)).sum())
     models = []
     for _ in range(n_toys):
         n = rng.poisson(mu).astype(float)
-        T = model.T
-        if fluctuate_templates and model.mc_stat:
-            T = model.T + rng.normal(0.0, 1.0, model.T.shape) * np.sqrt(np.clip(model.V, 0, None))
-            T = np.where(model.T >= 0, np.clip(T, 0, None), T)
-        models.append(_submodel(model, T=T, n=n))
-    rows = []
-    for fr in map_fits(models):
-        if fr is None:
-            rows.append(None)
-            continue
-        th, er, sing, ok, ab, dev = fr
-        rows.append({'theta': th, 'err': er, 'singular': sing, 'ok': ok, 'at_bound': ab, 'deviance': dev})
-    good = [r for r in rows if r is not None]
-    out = OrderedDict(n_toys=n_toys, seed=seed, theta_true=tt.tolist(), params=list(model.params),
-                      n_failed=n_toys - len(good), fluctuate_templates=fluctuate_templates)
-    if not good:
+        T, V = model.T, model.V
+        if ensemble == 'bb_lite' and fluct.any():
+            g = np.ones(len(nu))
+            g[fluct] = _gamma_scale(rng, np.ones(int(fluct.sum())), d2[fluct])
+            T, V = model.T * g, model.V * g ** 2
+        elif ensemble == 'mc_template' and model.mc_stat:
+            ok = (model.T > 0) & (model.V > 0)
+            T = model.T.copy()
+            T[ok] = _gamma_scale(rng, model.T[ok], model.V[ok])
+        models.append(_submodel(model, T=T, n=n, V=V))
+    return models, gen
+
+
+def run_toys(res, n_toys, seed, theta_true=None, ensemble='bb_lite', stress_label=None):
+    """
+    Pseudo-experiments refitted with the production fit (fit_sfs.fit), for one ensemble of
+    TOY_ENSEMBLES. theta_true defaults to the observed best fit and is used exactly as given:
+    an injection outside the SF bounds (or otherwise invalid) is refused (status 'invalid'),
+    never moved. A deliberately modified injection point is a stress test: pass stress_label.
+
+    Toy fits are classified as failed (exception), not converged, singular, or with a
+    parameter at a bound. Bias / spread use the converged fits; pulls and coverage use the
+    converged non-singular fits with the parameter off its bound; the GoF uses the converged
+    fits. All fractions are reported.
+    """
+    if ensemble not in TOY_ENSEMBLES:
+        raise ValueError(f"unknown toy ensemble {ensemble}")
+    model = res['model']
+    source = 'observed best fit' if theta_true is None else 'requested'
+    inj, mu = toy_injection(model, res['theta'] if theta_true is None else theta_true)
+    out = OrderedDict(status='ok', ensemble=ensemble, ensemble_definition=TOY_ENSEMBLES[ensemble],
+                      n_toys=n_toys, seed=seed, params=list(model.params), injection_source=source,
+                      stress_test=stress_label, theta_true=inj['theta_true'], injection=inj)
+    if not inj['valid']:
+        out.update(status='invalid', reason="; ".join(inj['reasons']))
         return out
-    TH = np.array([r['theta'] for r in good])
-    ER = np.array([r['err'] for r in good])
-    AB = np.array([[b is not None for b in r['at_bound']] for r in good])
+    tt = np.asarray(inj['theta_true'], dtype=float)
+    rng = np.random.default_rng(seed)
+    models, gen = _toy_models(model, tt, mu, n_toys, rng, ensemble)
+    out['generation'] = gen
+    rows = map_fits(models)
+
+    failed = [r is None for r in rows]
+    conv = [r is not None and r[3] and np.all(np.isfinite(r[0])) for r in rows]
+    out['n_failed'] = int(sum(failed))
+    out['n_not_converged'] = int(sum(1 for r, c in zip(rows, conv) if r is not None and not c))
+    good = [r for r, c in zip(rows, conv) if c]
+    out['n_valid'] = len(good)
+    if not good:
+        out.update(status='no valid fits')
+        return out
+    TH = np.array([r[0] for r in good])
+    ER = np.array([r[1] for r in good])
+    SG = np.array([r[2] for r in good])
+    AB = np.array([[b is not None for b in r[4]] for r in good])
+    DV = np.array([r[5] for r in good])
+    out['n_singular'] = int(SG.sum())
+    out['frac_singular'] = float(SG.mean())
+    out['frac_not_converged'] = float(out['n_not_converged'] / max(1, n_toys - out['n_failed']))
+    out['frac_failed'] = float(out['n_failed'] / max(1, n_toys))
+    out['frac_any_bound'] = float(AB.any(axis=1).mean())
+    pull_ok = ~AB & ~SG[:, None] & np.isfinite(ER) & (ER > 0)
     with np.errstate(invalid='ignore', divide='ignore'):
-        pull = np.where(AB | ~np.isfinite(ER) | (ER <= 0), np.nan, (TH - tt) / ER)
+        pull = np.where(pull_ok, (TH - tt) / ER, np.nan)
     out['per_param'] = OrderedDict()
     for i, p in enumerate(model.params):
         pc = pull[:, i][np.isfinite(pull[:, i])]
+        sd = float(TH[:, i].std(ddof=1)) if len(TH) > 1 else None
+        cov = float(np.mean(np.abs(pc) < 1.0)) if len(pc) else None
         out['per_param'][p] = {
-            'mean': float(TH[:, i].mean()), 'std': float(TH[:, i].std(ddof=1)) if len(TH) > 1 else None,
+            'mean': float(TH[:, i].mean()), 'std': sd,
             'bias': float(TH[:, i].mean() - tt[i]),
-            'bias_over_std': float((TH[:, i].mean() - tt[i]) / TH[:, i].std(ddof=1)) if len(TH) > 1 and TH[:, i].std() > 0 else None,
-            'median_err': float(np.nanmedian(np.where(AB[:, i], np.nan, ER[:, i]))) if (~AB[:, i]).any() else None,
+            'rel_bias': float((TH[:, i].mean() - tt[i]) / tt[i]),
+            'bias_over_std': float((TH[:, i].mean() - tt[i]) / sd) if sd else None,
+            'median_err': float(np.median(ER[pull_ok[:, i], i])) if pull_ok[:, i].any() else None,
+            'n_pulls': int(len(pc)),
             'pull_mean': float(pc.mean()) if len(pc) else None,
+            'pull_mean_err': float(pc.std(ddof=1) / np.sqrt(len(pc))) if len(pc) > 1 else None,
             'pull_width': float(pc.std(ddof=1)) if len(pc) > 1 else None,
-            'coverage_68': float(np.mean(np.abs(pc) < 1.0)) if len(pc) else None,
+            'coverage_68': cov,
+            'coverage_68_err': float(np.sqrt(cov * (1 - cov) / len(pc))) if len(pc) else None,
             'frac_at_bound': float(AB[:, i].mean()),
             'pulls': pc.tolist(),
         }
-    out['frac_singular'] = float(np.mean([r['singular'] for r in good]))
-    out['frac_not_converged'] = float(np.mean([not r['ok'] for r in good]))
-    out['frac_any_bound'] = float(AB.any(axis=1).mean())
-    out['deviance'] = [r['deviance'] for r in good]
+    out['deviance'] = DV.tolist()
+    ndf = res.get('ndf') or 0
+    gof = OrderedDict(ndf=ndf, mean_deviance=float(DV.mean()))
+    if ndf > 0:
+        p_asym = sps.chi2.sf(DV, ndf)
+        gof['mean_over_ndf'] = float(DV.mean() / ndf)
+        gof['frac_asymptotic_p_below_0p05'] = float(np.mean(p_asym < 0.05))   # 0.05 if chi2(ndf) holds
+        gof['ks_p_vs_chi2_ndf'] = float(sps.kstest(DV, 'chi2', args=(ndf,)).pvalue) if len(DV) > 4 else None
     obs = res['deviance']
-    out['p_gof_toys'] = float(np.mean(np.array(out['deviance']) >= obs))
+    n_ge = int(np.sum(DV >= obs))
+    gof['p_observed'] = float((n_ge + 1) / (len(DV) + 1))        # conservative: never 0
+    gof['p_observed_resolution'] = float(1.0 / (len(DV) + 1))
+    gof['calibrated'] = ensemble in ('bb_lite', 'mc_template') and stress_label is None and source != 'requested'
+    gof['note'] = ("toy p-value of the observed -2lnL in this ensemble" if gof['calibrated'] else
+                   "NOT a calibrated GoF p-value of the observed data (ensemble or injection point not the "
+                   "fitted model)")
+    out['gof'] = gof
+    out['p_gof_toys'] = gof['p_observed'] if gof['calibrated'] else None
     out['closure_ok'] = bool(all(
         (v['pull_mean'] is None or abs(v['pull_mean']) < THRESHOLDS['toy_bias']) and
         (v['pull_width'] is None or THRESHOLDS['toy_width'][0] <= v['pull_width'] <= THRESHOLDS['toy_width'][1]) and
-        v['frac_at_bound'] < 0.05 for v in out['per_param'].values()))
+        v['frac_at_bound'] < 0.05 for v in out['per_param'].values()) and out['frac_singular'] < 0.05
+        and out['frac_failed'] + out['frac_not_converged'] < 0.05)
     return out
 
 
@@ -732,11 +932,14 @@ def run_toys(res, n_toys, seed, theta_true=None, fluctuate_templates=True):
 # Validation                                                                  #
 # --------------------------------------------------------------------------- #
 def apply_sfs(entry, sfs, eras, chi2_fn):
-    """Data vs MC with SFs (per era and summed): yields and Pearson chi2 (replot_yields.chi2_ndf)."""
+    """
+    Data vs MC with SFs, per era and for all eras summed ('total'): in-range yields and the
+    Pearson chi2 of replot_yields.chi2_ndf. MC contents scale with SF, MC variances with SF^2.
+    """
     from src.sfdiag.inputs import th1_from
     out = OrderedDict()
-    for group in [[e] for e in eras] + [list(eras)]:
-        tag = group[0] if len(group) == 1 else 'total'
+    groups = [(e, [e]) for e in eras] + ([('total', list(eras))] if len(eras) > 1 else [])
+    for tag, group in groups:
         data = [h for e, h in entry['data'].items() if e in group]
         if not data:
             continue
@@ -764,8 +967,9 @@ def apply_sfs(entry, sfs, eras, chi2_fn):
                     'chi2_pre': float(c_pre), 'ndf_pre': int(n_pre), 'chi2_post': float(c_post), 'ndf_post': int(n_post),
                     'p_pre': float(sps.chi2.sf(c_pre, n_pre)) if n_pre > 0 else None,
                     'p_post': float(sps.chi2.sf(c_post, n_post)) if n_post > 0 else None}
-        for h in [hd] + hpre + hpost:
-            return out
+    if len(eras) == 1 and eras[0] in out:
+        out['total'] = out[eras[0]]
+    return out
 
 
 def runs_test(resid):
@@ -815,7 +1019,7 @@ def hypothetical_run3(hists, region, var, procs, run_lumis):
     new = {'bkg': OrderedDict(entry['bkg']), 'data': entry['data']}
     ratio = run_lumis['run3'] / run_lumis['run2'] if run_lumis and run_lumis.get('run2') else 1.0
     for p in procs:
-        h = entry['bkg'][(p, 'run2')].Clone(f"hypo_{region}_{var}_{abs(hash(p))}")
+        h = entry['bkg'][(p, 'run2')].Clone(f"hypo_{region}_{var}_{zlib.crc32(p.encode())}")
         h.SetDirectory(0)
         h.Scale(ratio)
         new['bkg'][(p, 'run3')] = h
@@ -859,26 +1063,37 @@ def region_overlaps(adata, regions):
 
 
 def veto_effect(adata, kind):
-    """Events and weights removed by nBaseLinePhotons == 0, per process and era, plus data/MC."""
+    """
+    Events and weights removed by nBaseLinePhotons == 0, per process and era, plus data/MC.
+    Files excluded from the vetoed region because nBaseLinePhotons is missing are not
+    counted as removed by the veto: they are listed separately (never passing, never removed).
+    """
     from src.sfdiag.inputs import in_pass_key
     recs = adata['records']
     a, b = f"{kind}_noveto", kind
+    excluded = {x['file'] for x in adata.get('excluded', []) if x['region'] == b}
     rows = OrderedDict()
+    excl_rows = []
     for k in ('mc', 'data'):
         for f, ra in recs.get(a, {}).get(k, {}).items():
             fm = adata['files'][f]
             key = (fm['process'] if k == 'mc' else 'data', fm['era'])
+            if f in excluded:
+                excl_rows.append({'file': f, 'process': key[0], 'era': key[1], 'events_before': int(len(ra['w'])),
+                                  'weight_before': float(ra['w'].sum())})
+                continue
             rb = recs.get(b, {}).get(k, {}).get(f)
             kept = np.isin(in_pass_key(ra), in_pass_key(rb)) if rb is not None else np.zeros(len(ra['w']), bool)
             r = rows.setdefault(key, {'process': key[0], 'era': key[1], 'events_before': 0, 'events_removed': 0,
                                       'weight_before': 0.0, 'weight_removed': 0.0, 'sumw2_removed': 0.0,
-                                      'missing_npho': 0})
+                                      'missing_npho': 0, 'kept_with_photons': 0})
             r['events_before'] += len(ra['w'])
             r['events_removed'] += int((~kept).sum())
             r['weight_before'] += float(ra['w'].sum())
             r['weight_removed'] += float(ra['w'][~kept].sum())
             r['sumw2_removed'] += float((ra['w'][~kept] ** 2).sum())
             r['missing_npho'] += int((ra['npho'] < 0).sum())
+            r['kept_with_photons'] += int((rb['npho'] != 0).sum()) if rb is not None else 0   # must be 0
     for r in rows.values():
         r['fraction_removed'] = r['weight_removed'] / r['weight_before'] if r['weight_before'] else 0.0
     eras = sorted({e for (_, e) in rows})
@@ -891,7 +1106,8 @@ def veto_effect(adata, kind):
         d0, d1, m0, m1 = tot(True, False), tot(True, True), tot(False, False), tot(False, True)
         dm[era] = {'data_before': d0, 'data_after': d1, 'mc_before': m0, 'mc_after': m1,
                    'ratio_before': d0 / m0 if m0 else None, 'ratio_after': d1 / m1 if m1 else None}
-    return {'rows': list(rows.values()), 'data_mc': dm}
+    return {'rows': list(rows.values()), 'data_mc': dm, 'excluded_missing_branch': excl_rows,
+            'veto_violations': int(sum(r['kept_with_photons'] for r in rows.values()))}
 
 
 def weight_report(adata, region):
@@ -921,11 +1137,30 @@ def weight_report(adata, region):
 
 
 def data_duplicates(adata, region):
-    """Duplicated (run, lumi, event) among the selected data events (only with event identifiers)."""
+    """
+    Duplicated (run, lumi, event) among the selected data events of the files that have event
+    identifiers. Files without them cannot be checked; they are counted, and the result is
+    'partial' (cross-file uniqueness of their events not established).
+    """
     recs = adata['records'].get(region, {}).get('data', {})
-    if not recs or not all(all(k in r for k in ('run', 'lumi', 'event')) for r in recs.values()):
-        return {'status': 'unavailable', 'reason': 'no event-identifier branches in the data files'}
-    arr = np.concatenate([np.stack([r['run'], r['lumi'], r['event']], axis=1) for r in recs.values()])
-    _, counts = np.unique(arr, axis=0, return_counts=True)
-    return {'status': 'ok', 'events': int(len(arr)), 'duplicated_keys': int((counts > 1).sum()),
-            'extra_copies': int((counts - 1)[counts > 1].sum())}
+    if not recs:
+        return {'status': 'unavailable', 'reason': 'no selected data events'}
+    with_ids = {f: r for f, r in recs.items() if all(k in r for k in ('run', 'lumi', 'event'))}
+    without = [f for f in recs if f not in with_ids]
+    out = {'files_with_ids': len(with_ids), 'files_without_ids': len(without),
+           'events_without_ids': int(sum(len(recs[f]['w']) for f in without)),
+           'files_without_ids_list': without}
+    if not with_ids:
+        out.update(status='unavailable', reason='no event-identifier branches in the data files')
+        return out
+    arr = np.concatenate([np.stack([r['run'], r['lumi'], r['event']], axis=1) for r in with_ids.values()])
+    src = np.concatenate([np.full(len(r['w']), i) for i, r in enumerate(with_ids.values())])
+    keys, inv, counts = np.unique(arr, axis=0, return_inverse=True, return_counts=True)
+    dup = counts[np.ravel(inv)] > 1
+    # duplicates spread over several files (overlapping inputs) vs within one file
+    n_files = np.array([len(np.unique(src[np.ravel(inv) == k])) for k in np.where(counts > 1)[0]]) \
+        if (counts > 1).any() else np.array([], int)
+    out.update(status='ok' if not without else 'partial', events=int(len(arr)),
+               duplicated_keys=int((counts > 1).sum()), extra_copies=int((counts - 1)[counts > 1].sum()),
+               duplicated_keys_across_files=int((n_files > 1).sum()), duplicated_events=int(dup.sum()))
+    return out

@@ -25,6 +25,7 @@ from src.sfdiag import stats as st
 from src.sfdiag.inputs import as_yields, common_mask, in_pass_key, REGION_KINDS
 
 ERA_MODELS = ('shared', 'independent')
+PARTITION_META = ('event_ids', 'event_identity_safe', 'partition_key', 'id_events')   # non-variable keys
 REGION_TITLE = {'photon': 'prompt #gamma CR', 'hadronic': 'hadronic SV CR', 'leptonic': 'leptonic SV CR'}
 
 
@@ -209,7 +210,9 @@ def study_region(ctx, kind):
                     live[('binning', var, em, s)] = b
                 n_toys = opts.toys if not (any(r['at_bound']) or r['singular']) else min(opts.toys, opts.toys_degenerate)
                 if n_toys > 0:
-                    res['toys_screen'][var][em] = st.run_toys(r, n_toys, seed_for(opts.seed, ctx.name, kind, var, em))
+                    # model-consistent ensemble: its GoF p enters the ranking of every candidate
+                    res['toys_screen'][var][em] = st.run_toys(r, n_toys, seed_for(opts.seed, ctx.name, kind, var, em),
+                                                              ensemble='bb_lite')
                     res['toys_screen'][var][em]['degenerate_nominal'] = bool(any(r['at_bound']) or r['singular'])
             _draw_stability(ctx, base, var, res, rlabel)
 
@@ -229,22 +232,29 @@ def study_region(ctx, kind):
                 res['validation'][var][em] = vv
             _draw_validation_summary(ctx, base, var, res['validation'][var], rlabel)
 
-    # ranking and recommendation (native selection)
-    res['ranking'] = rank_variables(res, cands)
-    rec = res['ranking'][0]['var'] if res['ranking'] and res['ranking'][0].get('usable') else None
+    # ranking: common-selection discrimination / identifiability among the observables whose
+    # native fit is stable, MC-supported and adequate; inconclusive when there is none
+    res['ranking'], res['ranking_detail'] = rank_variables(res, cands)
+    rec = res['ranking_detail']['recommended']
     res['recommended_var'] = rec
-    if rec and has_data:
+    # the variable the remaining diagnostics are made for: the recommendation, else the
+    # best-ranked variable with a native fit (a diagnostic focus, not a recommendation)
+    focus = res['ranking_detail']['focus']
+    res['focus_var'] = focus
+    if focus and has_data:
         meta, hists, arr = ctx.sets['native']
         res['toys_extended'] = OrderedDict()
         for em in ERA_MODELS:
-            r = live.get(('native', rec, em))
+            r = live.get(('native', focus, em))
             if r and r['status'] == 'ok' and opts.toys_extended > 0:
-                res['toys_extended'][em] = st.run_toys(r, opts.toys_extended,
-                                                       seed_for(opts.seed, ctx.name, kind, rec, em, 'ext'))
-        _draw_toys(ctx, base, rec, res)
-        # postfit stacks of the recommended variable and its validation targets
+                res['toys_extended'][em] = OrderedDict(
+                    (ens, st.run_toys(r, opts.toys_extended, seed_for(opts.seed, ctx.name, kind, focus, em, 'ext', ens),
+                                      ensemble=ens))
+                    for ens in st.TOY_ENSEMBLES)
+        _draw_toys(ctx, base, focus, res)
+        # postfit stacks of the focus variable and its validation targets
         for em in ERA_MODELS:
-            r = live.get(('native', rec, em))
+            r = live.get(('native', focus, em))
             if not r or r['status'] != 'ok':
                 continue
             sfs = st.sf_lookup(r, ctx.procs, ctx.eras)
@@ -254,11 +264,11 @@ def study_region(ctx, kind):
                 for era in ctx.eras + ['total']:
                     eras = ctx.eras if era == 'total' else [era]
                     c = cv.stack_canvas(ctx.plotters[era], a['native'][(kind, tgt)], ctx.var_meta[tgt], eras, sfs,
-                                        region_label=f"{rlabel}: SF({em}) from {rec}", tag=f"{kind}_{tgt}_{em}_{era}")
+                                        region_label=f"{rlabel}: SF({em}) from {focus}", tag=f"{kind}_{tgt}_{em}_{era}")
                     out.write(f"{base}/{era if era != 'total' else 'comparison'}/validation",
-                              c, f"postfit_{em}_from_{rec}_{tgt}_{era}")
+                              c, f"postfit_{em}_from_{focus}_{tgt}_{era}")
         # hypothetical Run 3 templates of Run-2-only processes
-        res['missing_run3'] = missing_run3_study(ctx, kind, rec, live)
+        res['missing_run3'] = missing_run3_study(ctx, kind, focus, live)
         _draw_missing_run3(ctx, base, res['missing_run3'])
     # independent validation on the event-level partition (common selection)
     if has_data:
@@ -292,67 +302,216 @@ def _bin_quality(r):
 # --------------------------------------------------------------------------- #
 # Ranking, partition, missing Run 3                                            #
 # --------------------------------------------------------------------------- #
+def _min_major_hellinger(res, var, sel):
+    """Smallest Hellinger distance between two major processes (the least separated pair)."""
+    sim = res['similarity'][sel].get(var)
+    comp = res['composition'][sel].get(var)
+    if not sim or not comp:
+        return None, None
+    major = set(_major(comp, sim['processes']))
+    H = np.asarray(sim['hellinger'], dtype=float)
+    best = None
+    for i, a in enumerate(sim['processes']):
+        for j, b in enumerate(sim['processes']):
+            if j > i and a in major and b in major and np.isfinite(H[i, j]) and (best is None or H[i, j] < best[0]):
+                best = (float(H[i, j]), f"{a} / {b}")
+    return best if best else (None, None)
+
+
+def _common_metrics(res, var):
+    """Discrimination and expected identifiability of a variable on the common event sample."""
+    fits = res['fits']['common'].get(var) or {}
+    sh = (res['asimov_summary']['common'].get(var) or {}).get('shared', {})
+    ind = (res['asimov_summary']['common'].get(var) or {}).get('independent', {})
+    hmin, hpair = _min_major_hellinger(res, var, 'common')
+    f = fits.get('shared') or {}
+    return OrderedDict(
+        common_fit_ok=f.get('status') == 'ok',
+        n_identified_shared_common=sh.get('n_identified'), n_params_shared_common=sh.get('n_params'),
+        median_rel_major_shared_common=sh.get('median_rel_major'), max_corr_shared_common=sh.get('max_corr'),
+        condition_shared_common=sh.get('condition_number'), regular_shared_common=sh.get('regular'),
+        n_identified_indep_common=ind.get('n_identified'), n_params_indep_common=ind.get('n_params'),
+        min_major_hellinger_common=hmin, least_separated_pair_common=hpair,
+        p_gof_shared_common=f.get('p_gof'))
+
+
+def _native_metrics(res, var):
+    """Fit stability, MC support and goodness of fit of a variable in its production selection."""
+    T = st.THRESHOLDS
+    fits = res['fits']['native'].get(var) or {}
+    sh = (res['asimov_summary']['native'].get(var) or {}).get('shared', {})
+    ind = (res['asimov_summary']['native'].get(var) or {}).get('independent', {})
+    path = []
+    for em in ERA_MODELS:
+        f = fits.get(em)
+        if not f or f['status'] != 'ok':
+            path.append(f"{em}: fit failed")
+            continue
+        nb = [p for p, b in zip(f['params'], f['at_bound']) if b]
+        if nb:
+            path.append(f"{em}: at bound {', '.join(nb)}")
+        if f['singular']:
+            path.append(f"{em}: singular Hessian")
+        if not f['converged']:
+            path.append(f"{em}: minimizer did not report convergence")
+    unstable = []
+    for em, sc in res['stability'].get(var, {}).items():
+        if sc.get('status') != 'ok':
+            continue
+        ident = fits[em]['identifiability']
+        for p, s in zip(sc['params'], sc['max_loo_shift']):
+            if ident.get(p, {}).get('identified') and s > T['loo_shift']:
+                unstable.append(f"{em}:{p} ({s:.1f} sigma, bin {sc['max_loo_bin'][sc['params'].index(p)]})")
+    # MC support of the fitted bins (shared-era fit, nominal binning)
+    q = ((res['binning'].get(var) or {}).get('shared') or {}).get('nominal', {}).get('quality') or {}
+    f = fits.get('shared') or {}
+    data_nomc = (f['data_excluded'] / f['data_total']) if f.get('status') == 'ok' and f.get('data_total') else None
+    support = []
+    if q.get('frac_relerr_high') is not None and q['frac_relerr_high'] > T['support_relerr_frac']:
+        support.append(f"{100 * q['frac_relerr_high']:.0f}% of fitted bins with MC rel. error > {T['relerr_high']}")
+    if data_nomc is not None and data_nomc > T['support_data_frac']:
+        support.append(f"{100 * data_nomc:.1f}% of the data in bins without MC")
+    # goodness of fit: model-consistent toy p when available, else asymptotic chi2
+    ty = (res['toys_screen'].get(var) or {}).get('shared') or {}
+    p_toy = ty.get('p_gof_toys')
+    p_asym = f.get('p_gof')
+    if p_toy is not None:
+        gof_bad = p_toy <= max(T['gof_p'], ty['gof']['p_observed_resolution'])
+    else:
+        gof_bad = p_asym is not None and p_asym < T['gof_p']
+    # binning dependence of the shared-era SFs (in units of the nominal error)
+    bins = (res['binning'].get(var) or {}).get('shared') or {}
+    spread = 0.0
+    if f.get('status') == 'ok':
+        for i, p in enumerate(f['params']):
+            vals = [b['theta'][b['params'].index(p)] for b in bins.values() if b.get('status') == 'ok' and p in b['params']]
+            if len(vals) > 1 and np.isfinite(f['err'][i]) and f['err'][i] > 0:
+                spread = max(spread, float((max(vals) - min(vals)) / f['err'][i]))
+    return OrderedDict(
+        native_fit_ok=f.get('status') == 'ok', pathologies=path, unstable=unstable, mc_support_issues=support,
+        frac_bins_relerr_high=q.get('frac_relerr_high'), data_frac_no_mc=data_nomc,
+        n_identified_shared=sh.get('n_identified'), n_params_shared=sh.get('n_params'),
+        median_rel_major_shared=sh.get('median_rel_major'), max_corr_shared=sh.get('max_corr'),
+        condition_shared=sh.get('condition_number'), regular_shared=sh.get('regular'),
+        n_identified_indep=ind.get('n_identified'), n_params_indep=ind.get('n_params'),
+        median_rel_major_indep=ind.get('median_rel_major'), max_corr_indep=ind.get('max_corr'),
+        p_gof_shared=p_asym, p_gof_toys_shared=p_toy,
+        p_gof_indep=(fits.get('independent') or {}).get('p_gof'),
+        gof_ok=not gof_bad if f.get('status') == 'ok' else False,
+        dev_ndf_shared=(f['deviance'] / f['ndf'] if f.get('status') == 'ok' and f.get('ndf') else None),
+        binning_spread_shared=spread)
+
+
+def _num(x, default=np.inf):
+    return default if x is None or (isinstance(x, float) and not np.isfinite(x)) else x
+
+
 def rank_variables(res, cands):
     """
-    Native-selection ranking of the candidate observables. Per variable and era model:
-      expected (Asimov) number of identified SFs and median sigma_rel of the major processes,
-      observed pathologies (parameter at a bound, singular Hessian, failed fit),
-      instability (largest leave-one-interval-out shift > 1 sigma of an identified SF).
-    Order: variables without pathologies first, then more identified SFs (shared-era model),
-    then smaller median sigma_rel of the major processes. GoF is reported, not ranked on.
+    Two rankings of the candidate observables, and the recommendation.
+
+      common  discrimination and expected identifiability on the SAME events for every
+              observable (common selection): regular expected Hessian first, then more
+              identified SFs (Asimov sigma_rel < ident_rel, shared-era model), smaller median
+              sigma_rel of the major processes, smaller max |rho|, larger separation of the
+              least-separated major pair. This is the like-for-like comparison of observables.
+      native  the production selection of each observable: fits without pathologies (bound,
+              singular, not converged), stable (leave-one-bin-out), MC-supported, adequate GoF
+              first, then the same identifiability order on the native events.
+
+    An observable is eligible when its native shared-era fit is free of pathologies, stable,
+    MC-supported and fits (GoF), and its common-selection expected Hessian is regular with at
+    least one identified SF. The recommendation is the eligible observable ranked best on the
+    common selection; with no eligible observable it is None (inconclusive). Small nominal
+    errors never make an observable eligible on their own, and event counts or the postfit
+    deviance are not ranked on. The thresholds are screening heuristics (stats.THRESHOLDS).
+    Returns (rows in final order, detail).
     """
-    rows = []
+    rows = OrderedDict()
     for var in cands:
         row = OrderedDict(var=var)
-        fits = res['fits']['native'].get(var)
-        asum = res['asimov_summary']['native'].get(var, {})
-        if not fits:
-            row.update(usable=False, reason='no fit (no data?)')
-            rows.append(row)
+        if not res['fits']['native'].get(var):
+            row.update(usable=False, eligible=False, reason='no native fit (no data?)', ineligible=['no native fit'])
+            rows[var] = row
             continue
-        path = []
-        for em in ERA_MODELS:
-            f = fits.get(em)
-            if not f or f['status'] != 'ok':
-                path.append(f"{em}: fit failed")
-                continue
-            nb = [p for p, b in zip(f['params'], f['at_bound']) if b]
-            if nb:
-                path.append(f"{em}: at bound {', '.join(nb)}")
-            if f['singular']:
-                path.append(f"{em}: singular Hessian")
-        unstable = []
-        for em, sc in res['stability'].get(var, {}).items():
-            if sc.get('status') != 'ok':
-                continue
-            ident = fits[em]['identifiability']
-            for p, s in zip(sc['params'], sc['max_loo_shift']):
-                if ident.get(p, {}).get('identified') and s > st.THRESHOLDS['loo_shift']:
-                    unstable.append(f"{em}:{p} ({s:.1f} sigma, bin {sc['max_loo_bin'][sc['params'].index(p)]})")
-        sh = asum.get('shared', {})
-        ind = asum.get('independent', {})
-        row.update(usable=fits['shared']['status'] == 'ok',
-                   pathologies=path, unstable=unstable,
-                   n_identified_shared=sh.get('n_identified'), n_params_shared=sh.get('n_params'),
-                   median_rel_major_shared=sh.get('median_rel_major'), max_corr_shared=sh.get('max_corr'),
-                   n_identified_indep=ind.get('n_identified'), n_params_indep=ind.get('n_params'),
-                   median_rel_major_indep=ind.get('median_rel_major'), max_corr_indep=ind.get('max_corr'),
-                   condition_shared=sh.get('condition_number'),
-                   p_gof_shared=fits['shared'].get('p_gof'), p_gof_indep=fits['independent'].get('p_gof'),
-                   dev_ndf_shared=(fits['shared']['deviance'] / fits['shared']['ndf']
-                                   if fits['shared'].get('ndf') else None))
-        rows.append(row)
+        row.update(_native_metrics(res, var))
+        row.update(_common_metrics(res, var))
+        why = []
+        if not row['native_fit_ok']:
+            why.append("native shared-era fit failed")
+        why += [f"native: {p}" for p in row['pathologies']]
+        why += [f"native unstable: {u}" for u in row['unstable']]
+        why += [f"native MC support: {s}" for s in row['mc_support_issues']]
+        if row['native_fit_ok'] and not row['gof_ok']:
+            pt = row['p_gof_toys_shared']
+            why.append(f"native GoF: p = {_fmt(row['p_gof_shared'])}" + (f" (toys {_fmt(pt)})" if pt is not None else ""))
+        if not row['common_fit_ok']:
+            why.append("common-selection shared-era fit failed")
+        elif not row['regular_shared_common']:
+            why.append("common selection: expected Hessian singular / near-degenerate (condition "
+                       f"{_fmt(row['condition_shared_common'])})")
+        elif not row['n_identified_shared_common']:
+            why.append("common selection: no SF identified")
+        row['usable'] = row['native_fit_ok']
+        row['eligible'] = not why
+        row['ineligible'] = why
+        rows[var] = row
 
-    def key(r):
-        if not r.get('usable'):
-            return (2, 0, np.inf)
-        bad = 1 if (r['pathologies'] or r['unstable']) else 0
-        return (bad, -(r['n_identified_shared'] or 0), r['median_rel_major_shared']
-                if r['median_rel_major_shared'] is not None else np.inf)
-    rows.sort(key=key)
-    for i, r in enumerate(rows):
-        r['rank'] = i + 1
-    return rows
+    def common_key(r):
+        if not r.get('common_fit_ok'):
+            return (2, 0, np.inf, np.inf, 0.0)
+        return (0 if r['regular_shared_common'] else 1, -(r['n_identified_shared_common'] or 0),
+                _num(r['median_rel_major_shared_common']), _num(r['max_corr_shared_common'], 1.0),
+                -_num(r['min_major_hellinger_common'], 0.0))
+
+    def native_key(r):
+        if not r.get('native_fit_ok'):
+            return (3, 0, 0, np.inf)
+        clean = not (r['pathologies'] or r['unstable'] or r['mc_support_issues'])
+        return (0 if clean else 1, 0 if r['gof_ok'] else 1, -(r['n_identified_shared'] or 0),
+                _num(r['median_rel_major_shared']))
+
+    order_common = sorted(rows, key=lambda v: common_key(rows[v]))
+    order_native = sorted(rows, key=lambda v: native_key(rows[v]))
+    for i, v in enumerate(order_common):
+        rows[v]['rank_common'] = i + 1
+    for i, v in enumerate(order_native):
+        rows[v]['rank_native'] = i + 1
+    final = sorted(rows, key=lambda v: (0 if rows[v]['eligible'] else 1 if rows[v].get('usable') else 2,
+                                        rows[v]['rank_common'], rows[v]['rank_native']))
+    for i, v in enumerate(final):
+        rows[v]['rank'] = i + 1
+    recommended = final[0] if final and rows[final[0]]['eligible'] else None
+    focus = next((v for v in final if rows[v].get('usable')), None)
+
+    # where the two selections lead to different conclusions
+    notes = []
+    if order_common and order_native and order_common[0] != order_native[0]:
+        a, b = rows[order_common[0]], rows[order_native[0]]
+        notes.append(
+            f"common selection ranks {a['var']} first ({a.get('n_identified_shared_common')}/"
+            f"{a.get('n_params_shared_common')} SFs identified, median sigma_rel "
+            f"{_fmt(a.get('median_rel_major_shared_common'))}), the native selections rank {b['var']} first "
+            f"({b.get('n_identified_shared')}/{b.get('n_params_shared')}, median sigma_rel "
+            f"{_fmt(b.get('median_rel_major_shared'))}"
+            + (f"; {a['var']} natively: {'; '.join(a['ineligible'])}" if a.get('ineligible') else "") + ")")
+    for v, r in rows.items():
+        nc, nn = r.get('n_identified_shared_common'), r.get('n_identified_shared')
+        if nc is not None and nn is not None and nn != nc:
+            notes.append(f"{v}: {nn} SFs identified in its native selection vs {nc} on the common events: "
+                         f"the difference comes from the selected event sample, not from the observable")
+    if recommended and order_common and recommended != order_common[0]:
+        notes.append(f"{recommended} is recommended although {order_common[0]} discriminates better on the common "
+                     f"events, because {order_common[0]} is not eligible: {'; '.join(rows[order_common[0]]['ineligible'])}")
+    detail = OrderedDict(
+        recommended=recommended, focus=focus, status='recommended' if recommended else 'inconclusive',
+        order_common=order_common, order_native=order_native, order_final=final, disagreements=notes,
+        criteria="eligible = native shared fit converged, regular, off bounds, stable, MC-supported, GoF adequate; "
+                 "and common-selection expected Hessian regular with >= 1 identified SF. Recommendation = eligible "
+                 "observable best ranked on the common selection.")
+    if not recommended:
+        detail['reasons'] = OrderedDict((v, rows[v].get('ineligible') or []) for v in final)
+    return [rows[v] for v in final], detail
 
 
 def partition_study(ctx, kind, cands):
@@ -362,9 +521,16 @@ def partition_study(ctx, kind, cands):
     this is an independent validation (unlike the cross-variable checks on the same events).
     """
     a = ctx.a
-    out = OrderedDict(event_ids=a['event_ids'],
-                      partition_key='(run, lumi, event)' if a['event_ids'] else
-                      'in-pass (file, chunk, row): reproducible for fixed inputs and loader chunking')
+    ids = a['id_summary']
+    ev = {k: ids[k]['events_by_region'].get(kind, {}) for k in ('mc', 'data')}
+    out = OrderedDict(
+        event_ids=a['event_ids'],
+        event_identity_safe=a['event_ids'],
+        partition_key=('(run, lumi, event) for every data file' if a['event_ids'] else
+                       f"(run, lumi, event) where available ({ev['data'].get('event_id', 0)} data events), in-pass "
+                       f"(file, chunk, row) otherwise ({ev['data'].get('in_pass', 0)} data events): reproducible for "
+                       f"fixed inputs and loader chunking, but the same event in two files is not recognized"),
+        id_events=ev)
     halves = {}
     for h in ('A', 'B'):
         halves[h] = as_yields(a['halves'][h], a['var_meta'], ctx.procs, ctx.eras, [kind])
@@ -424,47 +590,73 @@ def _fmt(x, f="{:.3g}"):
     return "n/a" if x is None or (isinstance(x, float) and not np.isfinite(x)) else f.format(x)
 
 
+def _gof_inadequate(f, ext_bb):
+    """GoF verdict of a fit: model-consistent toy p when available, else the asymptotic chi2 p."""
+    T = st.THRESHOLDS
+    if ext_bb and ext_bb.get('p_gof_toys') is not None:
+        p = ext_bb['p_gof_toys']
+        return p <= max(T['gof_p'], ext_bb['gof']['p_observed_resolution']), p, 'BB-lite toys'
+    p = f.get('p_gof')
+    return (p is not None and p < T['gof_p']), p, 'asymptotic chi2'
+
+
 def assess(ctx, kind, res):
     """Rule-based assessment of one region; every statement carries its numbers."""
     T = st.THRESHOLDS
     A = OrderedDict(supported=[], disfavored=[], inconclusive=[], limitations=[])
     rec = res.get('recommended_var')
+    focus = res.get('focus_var')
+    detail = res.get('ranking_detail') or {}
     A['recommended_observable'] = rec
+    A['diagnostic_focus'] = focus
+    A['recommendation_status'] = detail.get('status', 'inconclusive')
+    A['selection_comparison'] = list(detail.get('disagreements', []))
     if not res.get('has_data'):
         A['inconclusive'].append("no data in this region: no fit performed")
         return A
-    if not rec:
-        A['inconclusive'].append("no candidate observable gives a usable shared-era fit")
+    if not focus:
+        A['inconclusive'].append("no candidate observable gives a usable native shared-era fit")
         return A
     rk = {r['var']: r for r in res['ranking']}
-    r0 = rk[rec]
-    others = [r for r in res['ranking'] if r['var'] != rec]
-    A['supported'].append(
-        f"{rec} ranks first: {r0['n_identified_shared']}/{r0['n_params_shared']} SFs identified "
-        f"(Asimov sigma_rel < {T['ident_rel']}), median expected sigma_rel of the major processes "
-        f"{_fmt(r0['median_rel_major_shared'])}, max |rho| {_fmt(r0['max_corr_shared'])}"
-        + (f"; pathologies: {'; '.join(r0['pathologies'])}" if r0['pathologies'] else "")
-        + (f"; unstable: {'; '.join(r0['unstable'])}" if r0['unstable'] else ""))
-    for r in others:
-        why = []
-        if r.get('pathologies'):
-            why.append("; ".join(r['pathologies']))
-        if r.get('unstable'):
-            why.append("unstable: " + "; ".join(r['unstable']))
-        A['disfavored'].append(
-            f"{r['var']}: {r.get('n_identified_shared')}/{r.get('n_params_shared')} identified, median sigma_rel "
-            f"{_fmt(r.get('median_rel_major_shared'))}" + (f" ({'; '.join(why)})" if why else ""))
-    if r0['pathologies'] or r0['unstable']:
-        A['inconclusive'].append(f"even the best observable ({rec}) shows pathologies or instability; "
-                                 f"no observable is free of them")
+    r0 = rk[focus]
 
-    # era model
-    lr = res['lrt']['native'].get(rec)
-    fits = res['fits']['native'][rec]
+    def ident_txt(r):
+        return (f"common selection {r.get('n_identified_shared_common')}/{r.get('n_params_shared_common')} SFs "
+                f"identified, median sigma_rel {_fmt(r.get('median_rel_major_shared_common'))}, max |rho| "
+                f"{_fmt(r.get('max_corr_shared_common'))}, least separated major pair "
+                f"{r.get('least_separated_pair_common')} (Hellinger {_fmt(r.get('min_major_hellinger_common'))}); "
+                f"native {r.get('n_identified_shared')}/{r.get('n_params_shared')}, median sigma_rel "
+                f"{_fmt(r.get('median_rel_major_shared'))}")
+    if rec:
+        A['supported'].append(f"{rec} recommended (rank {r0['rank_common']} on the common events, "
+                              f"{r0['rank_native']} in the native selections): {ident_txt(r0)}; native fit stable, "
+                              f"MC-supported, GoF p = {_fmt(r0.get('p_gof_shared'))}"
+                              + (f" (toys {_fmt(r0['p_gof_toys_shared'])})" if r0.get('p_gof_toys_shared') is not None else ""))
+    else:
+        A['inconclusive'].append(
+            "no observable gives a stable, MC-supported and adequate normalization fit with identifiable SFs: "
+            "observable recommendation inconclusive. The diagnostics below are for " + focus +
+            " (best ranked) as a diagnostic focus, not a recommendation")
+    for r in res['ranking']:
+        if r['var'] == rec:
+            continue
+        A['disfavored' if rec else 'inconclusive'].append(
+            f"{r['var']} (common rank {r.get('rank_common')}, native rank {r.get('rank_native')}): "
+            + (ident_txt(r) if r.get('usable') else r.get('reason', '')) +
+            (f"; not eligible: {'; '.join(r['ineligible'])}" if r.get('ineligible') else ""))
+    var = focus
+
+    # era model: the LRT p-value is only used when Wilks' conditions hold
+    lr = res['lrt']['native'].get(var)
+    fits = res['fits']['native'][var]
+    A['era_model'] = 'inconclusive'
     if lr:
-        txt = (f"shared vs independent Run 2/Run 3 SFs on {rec}: delta(-2lnL) = {lr['delta_deviance']:.2f} "
-               f"for {lr['delta_k']} extra parameters, p = {_fmt(lr['p'])}")
-        if lr['p'] < T['gof_p']:
+        txt = (f"shared vs independent Run 2/Run 3 SFs on {var}: delta(-2lnL) = {lr['delta_deviance']:.2f} "
+               f"for {lr['delta_k']} extra parameters, nominal p = {_fmt(lr['p'])}")
+        if not lr['interpretable']:
+            A['inconclusive'].append("era dependence: " + txt + "; the p-value is not interpretable ("
+                                     + "; ".join(lr['caveats']) + ")")
+        elif lr['p'] < T['gof_p']:
             A['era_model'] = 'independent'
             A['supported'].append("independent Run 2/Run 3 SFs: " + txt)
             A['disfavored'].append("shared Run 2/Run 3 SFs: " + txt)
@@ -472,26 +664,49 @@ def assess(ctx, kind, res):
             A['era_model'] = 'shared'
             A['supported'].append("shared Run 2/Run 3 SFs (the data do not require era-specific SFs): " + txt)
         else:
-            A['era_model'] = 'shared'
             A['inconclusive'].append("era dependence: " + txt)
-        ratios = res['era_ratio']['native'].get(rec, {})
+        ratios = res['era_ratio']['native'].get(var, {})
         sig = [f"{p} (run3 - run2 = {v['diff']:+.3f}, z = {v['z']:.1f})" for p, v in ratios.items()
                if v.get('z') is not None and np.isfinite(v['z']) and abs(v['z']) > 3]
         if sig:
-            A['supported'].append("era-dependent SFs for: " + ", ".join(sig))
+            A['supported' if lr['interpretable'] else 'inconclusive'].append("era-dependent SFs for: " + ", ".join(sig))
+        ia = (res['asimov_summary']['native'].get(var) or {}).get('independent', {})
+        if A['era_model'] == 'independent' and not ia.get('regular', True):
+            A['inconclusive'].append("the independent-era model is preferred but its expected Hessian is singular / "
+                                     "near-degenerate: some era-specific SFs are not separately measurable")
     else:
-        A['era_model'] = 'shared'
         A['inconclusive'].append("shared vs independent era test not available (a fit failed or no extra parameters)")
-    em = A['era_model']
+    # the model the remaining diagnostics are evaluated for
+    em = A['era_model'] if A['era_model'] != 'inconclusive' else 'shared'
+    if fits.get(em, {}).get('status') != 'ok':
+        em = next((m for m in ERA_MODELS if fits.get(m, {}).get('status') == 'ok'), em)
+    A['era_model_used'] = em
     f = fits.get(em)
     if not f or f['status'] != 'ok':
-        A['inconclusive'].append(f"the {em} fit of {rec} failed: {f.get('error') if f else 'missing'}")
+        A['inconclusive'].append(f"the {em} fit of {var} failed: {f.get('error') if f else 'missing'}")
         return A
 
-    # backgrounds
-    ext = (res.get('toys_extended') or {}).get(em) or {}
+    # toys of the focus variable (model-consistent ensemble for closure and GoF)
+    ext_all = (res.get('toys_extended') or {}).get(em) or {}
+    ext = ext_all.get('bb_lite') or {}
+    tsum = []
+    for ens, ty in ext_all.items():
+        if ty.get('status') != 'ok':
+            tsum.append(f"{ens}: {ty.get('status')} ({ty.get('reason', '')})")
+            continue
+        pw = ", ".join(f"{p} {v['pull_mean']:+.2f}/{v['pull_width']:.2f}" for p, v in ty['per_param'].items()
+                       if v.get('pull_width') is not None)
+        tsum.append(f"{ens} ({ty['n_valid']}/{ty['n_toys']} valid fits, {ty['n_failed']} failed, "
+                    f"{ty['n_not_converged']} not converged, singular {ty['frac_singular']:.2f}, any bound "
+                    f"{ty['frac_any_bound']:.2f}): pull mean/width {pw}; closure {'ok' if ty['closure_ok'] else 'FAILS'}; "
+                    + (f"GoF toy p = {_fmt(ty['p_gof_toys'])}" if ty['gof']['calibrated'] else
+                       "GoF not calibrated in this ensemble"))
+    if tsum:
+        A['toys'] = tsum
     tp = ext.get('per_param', {})
-    cons, need = [], []
+
+    inadequate, p_g, p_src = _gof_inadequate(f, ext)
+    cons, need, precise_inadequate = [], [], []
     for p, idf in f['identifiability'].items():
         t = tp.get(p, {})
         toy_bad = (t.get('pull_mean') is not None and abs(t['pull_mean']) > T['toy_bias']) or \
@@ -500,15 +715,21 @@ def assess(ctx, kind, res):
         i = f['params'].index(p)
         desc = (f"{p} = {f['theta'][i]:.3f} +- {_fmt(f['err'][i])} (sigma_rel {_fmt(idf['rel_err'])}, "
                 f"max |rho| {idf['max_corr']:.2f} with {idf['max_corr_with']}"
-                + (f", toy pull {t['pull_mean']:+.2f}/{t['pull_width']:.2f}" if t.get('pull_width') is not None else "") + ")")
+                + (f", BB-lite toy pull {t['pull_mean']:+.2f}/{t['pull_width']:.2f}" if t.get('pull_width') is not None else "") + ")")
         if idf['identified'] and idf['max_corr'] <= T['high_corr'] and not toy_bad:
-            cons.append(desc)
+            # a small error from a model that does not describe the data is not a measurement
+            (precise_inadequate if inadequate else cons).append(desc)
         elif idf['weak'] or idf['max_corr'] > T['high_corr'] or toy_bad:
-            need.append(desc + (" [toy closure fails]" if toy_bad else ""))
+            need.append(desc + (" [toy closure fails]" if toy_bad else "")
+                        + ("" if idf.get('regular', True) else " [no regular error: bound / singular / not converged]"))
         else:
             A['inconclusive'].append(f"moderately constrained: {desc}")
     A['constrained_backgrounds'] = cons
+    A['precise_but_model_inadequate'] = precise_inadequate
     A['backgrounds_needing_treatment'] = need + [f"{p} (no MC in the fit range; fixed)" for p in f.get('absent', [])]
+    if precise_inadequate:
+        A['inconclusive'].append(f"{len(precise_inadequate)} SF(s) have small nominal errors but the {em} model does not "
+                                 f"describe {var} (GoF p = {_fmt(p_g)}, {p_src}): not counted as constrained")
 
     # variants of the weak processes
     for lab in (f"{em}_fixweak", f"{em}_priorweak"):
@@ -533,7 +754,7 @@ def assess(ctx, kind, res):
             if np.isfinite(corr[i, j]) and abs(corr[i, j]) > 0.5:
                 pairs.append((abs(corr[i, j]), f"{f['params'][i]} / {f['params'][j]}: {corr[i, j]:+.2f}"))
     A['correlations'] = [p for _, p in sorted(pairs, reverse=True)]
-    asi = res['asimov']['native'][rec].get(em)
+    asi = res['asimov']['native'][var].get(em)
     if asi:
         wd = sorted(asi['weakest_direction'].items(), key=lambda kv: -abs(kv[1]))[:3]
         A['weakest_direction'] = (f"smallest correlation eigenvalue {asi['eigenvalues'][0]:.3g} "
@@ -541,7 +762,7 @@ def assess(ctx, kind, res):
                                   + ", ".join(f"{p} {c:+.2f}" for p, c in wd))
 
     # binning
-    bins = res['binning'].get(rec, {}).get(em, {})
+    bins = res['binning'].get(var, {}).get(em, {})
     choice = None
     for scheme in ('nominal', 'merge2', 'adaptive', 'merge5'):
         b = bins.get(scheme)
@@ -569,10 +790,10 @@ def assess(ctx, kind, res):
         A['limitations'].append(f"binning dependence: {max(spread)[1]} varies by {max(spread)[0]:.1f} sigma across binnings")
 
     # stability
-    sc = res['stability'].get(rec, {}).get(em, {})
+    sc = res['stability'].get(var, {}).get(em, {})
     if sc.get('status') == 'skipped':
         A['stability'] = f"not evaluated: {sc.get('reason')}"
-        A['inconclusive'].append(f"stability of the {em} SFs of {rec} not evaluated ({sc.get('reason')})")
+        A['inconclusive'].append(f"stability of the {em} SFs of {var} not evaluated ({sc.get('reason')})")
     if sc.get('status') == 'ok':
         mx = sc['max_loo_shift']
         A['stability'] = (f"largest leave-one-interval-out shift: " +
@@ -585,10 +806,17 @@ def assess(ctx, kind, res):
             A['limitations'].append(f"SFs driven by a narrow kinematic interval (quarter removal > 2 sigma): {', '.join(big)}")
 
     # goodness of fit and validation
-    A['gof'] = (f"-2lnL = {f['deviance']:.1f} for ndf {f['ndf']} (p = {_fmt(f['p_gof'])}"
-                + (f", toy p = {_fmt(ext.get('p_gof_toys'))}" if ext else "") + f"); prefit -2lnL {f['deviance_pre']:.1f}; "
+    g = ext.get('gof') or {}
+    A['gof'] = (f"-2lnL = {f['deviance']:.1f} for ndf {f['ndf']} (asymptotic p = {_fmt(f['p_gof'])}"
+                + (f", BB-lite toy p = {_fmt(ext.get('p_gof_toys'))} with resolution {_fmt(g.get('p_observed_resolution'))}; "
+                   f"toy -2lnL mean/ndf {_fmt(g.get('mean_over_ndf'))}, KS p vs chi2(ndf) {_fmt(g.get('ks_p_vs_chi2_ndf'))}"
+                   if ext.get('p_gof_toys') is not None else "")
+                + f"); prefit -2lnL {f['deviance_pre']:.1f}; "
                 f"{f['nbins_excluded']} bins without MC, {f['data_excluded']:.0f} data events not fitted")
-    val = res['validation'].get(rec, {}).get(em, {})
+    if g.get('ks_p_vs_chi2_ndf') is not None and g['ks_p_vs_chi2_ndf'] < T['gof_p']:
+        A['limitations'].append(f"the toy -2lnL distribution of {var} is not chi2(ndf) (KS p = "
+                                f"{_fmt(g['ks_p_vs_chi2_ndf'])}): use the toy GoF p, not the asymptotic one")
+    val = res['validation'].get(var, {}).get(em, {})
     vtxt, vbad = [], []
     for tgt, v in val.items():
         t = v.get('total')
@@ -600,7 +828,7 @@ def assess(ctx, kind, res):
             if t['p_post'] is not None and t['p_post'] < T['gof_p'] and t['ndf_post'] and t['chi2_post'] / t['ndf_post'] > 2:
                 vbad.append(tgt)
     A['validation'] = "correlated (same events): " + "; ".join(vtxt) if vtxt else "no validation targets"
-    part = (res.get('partition') or {}).get(rec, {}).get(em, {})
+    part = (res.get('partition') or {}).get(var, {}).get(em, {})
     if part.get('compat_z'):
         zs = part['compat_z']
         A['partition'] = ("independent halves: SF(A) - SF(B) z = " +
@@ -611,13 +839,11 @@ def assess(ctx, kind, res):
 
     # model adequacy
     tags = []
-    p_g = ext.get('p_gof_toys') if ext else f['p_gof']
-    inadequate = p_g is not None and p_g < T['gof_p']
     if inadequate:
-        A['limitations'].append(f"normalization-only model does not describe {rec} (GoF p = {_fmt(p_g)})")
+        A['limitations'].append(f"normalization-only model does not describe {var} (GoF p = {_fmt(p_g)}, {p_src})")
         if need or r0['pathologies']:
             tags.append("poorly constrained process mixture")
-        rp = res['residuals']['native'][rec].get(em, {})
+        rp = res['residuals']['native'][var].get(em, {})
         coh = [ch for ch, rt in rp.get('runs', {}).items() if rt.get('p') is not None and rt['p'] < T['gof_p']]
         if coh:
             tags.append(f"coherent residual pattern in {', '.join(coh)} (variable-dependent shape difference)")
@@ -627,11 +853,12 @@ def assess(ctx, kind, res):
         if f['data_excluded'] > 0.01 * max(f['data_total'], 1):
             tags.append(f"data without MC support ({f['data_excluded']:.0f} events): missing background contribution?")
         if lr and lr['p'] < T['gof_p']:
-            tags.append("era-dependent normalization (reconstruction / selection-efficiency differences between runs?)")
+            tags.append("era-dependent normalization (reconstruction / selection-efficiency differences between runs?)"
+                        + ("" if lr['interpretable'] else " [LRT p not interpretable]"))
         if not tags:
             tags.append("unresolved modeling limitation (no single diagnostic pattern)")
     if vbad:
-        tags.append(f"SFs from {rec} do not describe {', '.join(vbad)} (postfit chi2/ndf > 2): "
+        tags.append(f"SFs from {var} do not describe {', '.join(vbad)} (postfit chi2/ndf > 2): "
                     f"variable-dependent shape differences")
     A['model_adequacy'] = tags
     if tags:
@@ -831,7 +1058,8 @@ def _draw_stability(ctx, base, var, res, rlabel):
             continue
         pp = ty['per_param']
         out.write(f"{base}/comparison/toys", cv.graph_canvas(
-            f"screening toys ({ty['n_toys']}), {em} ({var}): pull mean #pm width", list(pp),
+            f"screening toys ({ty['n_valid']}/{ty['n_toys']} valid, {ty['ensemble']}), {em} ({var}): pull mean #pm width",
+            list(pp),
             [("pull", [v['pull_mean'] for v in pp.values()], [v['pull_width'] for v in pp.values()], ROOT.kBlue + 1)],
             "pull", ref_lines=[(0, 2), (1, 3), (-1, 3)],
             notes=[f"singular {ty['frac_singular']:.2f}, any bound {ty['frac_any_bound']:.2f}"]),
@@ -854,32 +1082,43 @@ def _draw_validation_summary(ctx, base, var, val, rlabel):
 
 def _draw_toys(ctx, base, var, res):
     d = f"{base}/comparison/toys"
-    for em, ty in (res.get('toys_extended') or {}).items():
-        if not ty.get('per_param'):
-            continue
-        ctx.out.write(d, cv.pulls_grid_canvas(f"toy pulls ({ty['n_toys']} toys), {em} ({var})",
-                                              OrderedDict((p, v['pulls']) for p, v in ty['per_param'].items())),
-                      f"toys_pulls_{var}_{em}")
+    for em, ens in (res.get('toys_extended') or {}).items():
         f = res['fits']['native'][var][em]
-        dv = ty['deviance']
-        hi = max(max(dv) if dv else 1, f['deviance']) * 1.1
-        ctx.out.write(d, cv.hist1d_canvas(f"toy -2lnL at the minimum, {em} ({var})", "-2 ln L", dv, 40, 0, hi,
-                                          lines=[(f['deviance'], ROOT.kRed + 1)],
-                                          notes=[f"observed {f['deviance']:.1f}", f"toy p = {ty['p_gof_toys']:.3f}"]),
-                      f"toys_gof_{var}_{em}")
-        pp = ty['per_param']
-        ctx.out.write(d, cv.graph_canvas(
-            f"toy closure, {em} ({var}): pull mean #pm width, 68% coverage", list(pp),
-            [("pull mean #pm width", [v['pull_mean'] for v in pp.values()], [v['pull_width'] for v in pp.values()],
-              ROOT.kBlue + 1), ("coverage(|pull|<1)", [v['coverage_68'] for v in pp.values()], None, ROOT.kGreen + 2),
-             ("fraction at bound", [v['frac_at_bound'] for v in pp.values()], None, ROOT.kRed + 1)],
-            "", ref_lines=[(0, 2), (0.683, 3), (1, 3), (-1, 3)]), f"toys_closure_{var}_{em}")
+        for name, ty in ens.items():
+            if not ty.get('per_param'):
+                continue
+            tag = f"{var}_{em}_{name}"
+            ctx.out.write(d, cv.pulls_grid_canvas(f"toy pulls ({ty['n_valid']}/{ty['n_toys']} valid), {em} ({var}), "
+                                                  f"{name} ensemble",
+                                                  OrderedDict((p, v['pulls']) for p, v in ty['per_param'].items())),
+                          f"toys_pulls_{tag}")
+            dv = ty['deviance']
+            hi = max(max(dv) if dv else 1, f['deviance']) * 1.1
+            g = ty['gof']
+            ctx.out.write(d, cv.hist1d_canvas(
+                f"toy -2lnL at the minimum, {em} ({var}), {name} ensemble", "-2 ln L", dv, 40, 0, hi,
+                lines=[(f['deviance'], ROOT.kRed + 1)],
+                notes=[f"observed {f['deviance']:.1f}, ndf {g['ndf']}",
+                       f"toy p = {g['p_observed']:.3f}" if g['calibrated'] else "not a calibrated GoF p (see report)",
+                       f"KS p vs #chi^{{2}}(ndf) = {_fmt(g.get('ks_p_vs_chi2_ndf'))}"]),
+                f"toys_gof_{tag}")
+            pp = ty['per_param']
+            ctx.out.write(d, cv.graph_canvas(
+                f"toy closure, {em} ({var}), {name}: pull mean #pm width, 68% coverage", list(pp),
+                [("pull mean #pm width", [v['pull_mean'] for v in pp.values()], [v['pull_width'] for v in pp.values()],
+                  ROOT.kBlue + 1),
+                 ("coverage(|pull|<1)", [v['coverage_68'] for v in pp.values()],
+                  [v['coverage_68_err'] for v in pp.values()], ROOT.kGreen + 2),
+                 ("fraction at bound", [v['frac_at_bound'] for v in pp.values()], None, ROOT.kRed + 1)],
+                "", ref_lines=[(0, 2), (0.683, 3), (1, 3), (-1, 3)],
+                notes=[f"injected: observed best fit; valid fits {ty['n_valid']}/{ty['n_toys']}"]),
+                f"toys_closure_{tag}")
 
 
 def _draw_partition(ctx, base, part):
     d = f"{base}/comparison/partition"
     for var, ems in part.items():
-        if not isinstance(ems, dict) or var in ('event_ids', 'partition_key'):
+        if not isinstance(ems, dict) or var in PARTITION_META:
             continue
         for em, row in ems.items():
             fa, fb = row.get('fit_A'), row.get('fit_B')
@@ -1010,7 +1249,7 @@ def study_analysis(ctx, audit, regions=None):
     res = OrderedDict(name=ctx.name, config=a['config'], mode=a['mode'], isr_pt_cut=a['isr_pt_cut'],
                       processes=ctx.procs, eras=ctx.eras, run_lumis=a['run_lumis'], production=ctx.production,
                       regions_def=OrderedDict((r, {k: v for k, v in rc.items()}) for r, rc in a['regions'].items()),
-                      excluded=a['excluded'], event_ids=a['event_ids'])
+                      excluded=a['excluded'], event_ids=a['event_ids'], id_summary=a['id_summary'])
     print(f"[{ctx.name}] cutflow / overlaps")
     res['cutflow'] = cutflow(ctx, audit)
     draw_cutflow(ctx, res['cutflow'])
@@ -1023,5 +1262,52 @@ def study_analysis(ctx, audit, regions=None):
         if regions and kind not in regions:
             continue
         print(f"[{ctx.name}] region {kind}")
-        res['regions'][kind] = study_region(ctx, kind)
+        try:
+            res['regions'][kind] = study_region(ctx, kind)
+        except Exception as e:   # recorded and reported as an incomplete run, never silent
+            import traceback
+            print(f"ERROR [{ctx.name}] region {kind}: {e}")
+            res['regions'][kind] = OrderedDict(kind=kind, status=f"study failed: {e}",
+                                               error=traceback.format_exc())
     return res
+
+
+def completion_issues(name, res):
+    """Required studies that did not produce results (an empty list = complete)."""
+    out = []
+    for kind, R in res.get('regions', {}).items():
+        tag = f"[{name}] {kind}"
+        if R.get('error'):
+            out.append(f"{tag}: {R['status']}")
+            continue
+        if R.get('status') or not R.get('has_data'):
+            continue   # no MC / no data: reported in the region, nothing required
+        nat = R['fits']['native']
+        for var, fits in nat.items():
+            for em in ERA_MODELS:
+                if (fits.get(em) or {}).get('status') != 'ok':
+                    out.append(f"{tag}: native {em} fit of {var} failed: {(fits.get(em) or {}).get('error')}")
+        for var, ems in R.get('validation', {}).items():
+            for em, vv in ems.items():
+                for tgt, v in vv.items():
+                    if 'total' not in v:
+                        out.append(f"{tag}: validation {var} -> {tgt} ({em}) has no combined-era result")
+        focus = R.get('focus_var')
+        if focus:
+            for em, ens in (R.get('toys_extended') or {}).items():
+                for e, ty in ens.items():
+                    if ty.get('status') != 'ok':
+                        out.append(f"{tag}: {e} toys of {focus} ({em}): {ty.get('status')} {ty.get('reason', '')}")
+        for var, ems in (R.get('stability') or {}).items():
+            for em, sc in ems.items():
+                if sc.get('status') == 'failed':
+                    out.append(f"{tag}: stability scan of {var} ({em}) failed: {sc.get('error')}")
+        part = R.get('partition') or {}
+        if not any(k not in PARTITION_META for k in part):
+            out.append(f"{tag}: no event-partition validation")
+    if res.get('record_check'):
+        out.append(f"[{name}] {len(res['record_check'])} record / loader histogram mismatches")
+    for r in res.get('reference') or []:
+        if r.get('status') != 'ok':
+            out.append(f"[{name}] reference yields {r['region']}:{r['var']} {r['sample']}: {r['status']}")
+    return out

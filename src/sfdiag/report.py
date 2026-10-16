@@ -144,7 +144,10 @@ def tables(results):
                                                                'pull_mean_err', 'pull_width', 'coverage_68',
                                                                'coverage_68_err', 'frac_at_bound')},
                                           frac_singular=ty.get('frac_singular'), frac_any_bound=ty.get('frac_any_bound'),
-                                          gof_calibrated=g.get('calibrated'), p_gof_toys=ty.get('p_gof_toys'),
+                                          gof_estimates_observed_p=g.get('estimates_observed_p'),
+                                          p_gof_toys=ty.get('p_gof_toys'), toy_n_effective=g.get('n_effective'),
+                                          toy_p_resolution=g.get('p_observed_resolution'),
+                                          toy_resolves_threshold=g.get('resolves_threshold'),
                                           toy_dev_mean_over_ndf=g.get('mean_over_ndf'),
                                           toy_frac_asym_p_lt_0p05=g.get('frac_asymptotic_p_below_0p05'),
                                           toy_ks_p_vs_chi2=g.get('ks_p_vs_chi2_ndf'), closure_ok=ty.get('closure_ok')))
@@ -230,11 +233,19 @@ def write_html(path, results):
          "<span class='inc'>inconclusive</span> are kept apart.</p>"]
 
     comp = results.get('completion') or {}
-    if comp.get('issues'):
-        h.append("<div class='card'><b class='dis'>Incomplete run: required studies failed or produced no result</b>"
-                 + _list(comp['issues'], 'dis') + "</div>")
+    if comp.get('status') == 'failed':
+        h.append("<div class='card'><b class='dis'>Execution status: FAILED</b> (a required computation raised an error "
+                 "or an integrity check failed; results below are partial)" + _list(comp.get('failed'), 'dis')
+                 + (("<b class='inc'>Also not performed</b>" + _list(comp['partial'], 'inc')) if comp.get('partial') else "")
+                 + "</div>")
+    elif comp.get('status') == 'partial':
+        h.append("<div class='card'><b class='inc'>Execution status: PARTIAL</b> (useful results, but some requested "
+                 "studies could not be performed)" + _list(comp.get('partial'), 'inc') + "</div>")
     elif comp:
-        h.append("<p class='muted'>All required studies produced results.</p>")
+        h.append("<p class='muted'>Execution status: complete (all requested studies produced results; this says "
+                 "nothing about whether the fit models are adequate).</p>")
+    if comp.get('notes'):
+        h.append("<p class='muted'>Expected, not counted as incomplete:</p>" + _list(comp['notes']))
 
     # overview table
     rows = []
@@ -286,7 +297,11 @@ def write_html(path, results):
         h.append("<h2>Toy ensembles</h2><p>Toys are injected at the observed best fit (never moved; an invalid "
                  "injection is refused). Statistics use converged fits; pulls and coverage exclude singular fits and "
                  "parameters at a bound; failure fractions are reported separately. Only the BB-lite and MC-template "
-                 "ensembles give a GoF p-value of the observed data.</p>"
+                 "ensembles give a toy GoF p-value of the observed data, and it is approximate: the BB-lite ensemble "
+                 "fluctuates the MC with a Gamma factor where the production likelihood uses a Gaussian constraint. "
+                 "With n valid toys the p-value resolution is 1/(n+1); an ensemble that cannot resolve the GoF "
+                 "threshold never establishes an adequate fit on its own (the verdict is then inconclusive when the "
+                 "asymptotic p disagrees). The asymptotic chi2(ndf) p is nominal and unreliable in sparse bins.</p>"
                  + _table(["ensemble", "definition"], [[_e(k), _e(v)] for k, v in ens.items()]))
 
     h.append("<h2>Thresholds and settings</h2><p class='muted'>The thresholds are screening heuristics of this "
@@ -341,7 +356,8 @@ def region_html(an, kind, R):
                  + "</span></p>")
         h.append(_table(["rank", "var", "eligible", "rank common", "identified common (shared)", "median σrel common",
                          "max |ρ| common", "least separated pair (Hellinger)", "rank native", "identified native",
-                         "median σrel native", "GoF p shared (asym. / toys)", "not eligible because"],
+                         "median σrel native", "GoF p shared (asym. / approx. toys [n])", "GoF verdict",
+                         "not eligible because"],
                         [[_e(r.get('rank')), _e(r['var']), _e('yes' if r.get('eligible') else 'no'), _e(r.get('rank_common')),
                           f"{_e(r.get('n_identified_shared_common'))}/{_e(r.get('n_params_shared_common'))}",
                           _f(r.get('median_rel_major_shared_common')), _f(r.get('max_corr_shared_common')),
@@ -349,7 +365,8 @@ def region_html(an, kind, R):
                           _e(r.get('rank_native')),
                           f"{_e(r.get('n_identified_shared'))}/{_e(r.get('n_params_shared'))}",
                           _f(r.get('median_rel_major_shared')),
-                          f"{_f(r.get('p_gof_shared'))} / {_f(r.get('p_gof_toys_shared'))}",
+                          f"{_f(r.get('p_gof_shared'))} / {_f(r.get('p_gof_toys_shared'))} [{_e(r.get('n_toys_gof_shared') or '–')}]",
+                          _e(r.get('gof_verdict') or '–'),
                           _e("; ".join(r.get('ineligible') or []) or r.get('reason', ''))]
                          for r in rk]))
     # composition of the recommended (or focus) variable

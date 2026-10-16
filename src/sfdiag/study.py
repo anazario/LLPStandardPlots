@@ -127,7 +127,8 @@ def study_region(ctx, kind):
     a, out, opts = ctx.a, ctx.out, ctx.opts
     base = f"{ctx.name}/{kind}"
     rlabel = f"{REGION_TITLE[kind]} ({ctx.name})"
-    res = OrderedDict(kind=kind, cut=a['regions'][kind]['cut'], production_var=ctx.production_var(kind))
+    res = OrderedDict(kind=kind, cut=a['regions'][kind]['cut'], production_var=ctx.production_var(kind),
+                      blind=bool(a['regions'][kind].get('blind')))
     cands = [v for v in a['candidates'] if (kind, v) in a['native']]
     if not cands:
         res['status'] = 'no MC in region'
@@ -371,14 +372,11 @@ def _native_metrics(res, var):
         support.append(f"{100 * q['frac_relerr_high']:.0f}% of fitted bins with MC rel. error > {T['relerr_high']}")
     if data_nomc is not None and data_nomc > T['support_data_frac']:
         support.append(f"{100 * data_nomc:.1f}% of the data in bins without MC")
-    # goodness of fit: model-consistent toy p when available, else asymptotic chi2
+    # goodness of fit: asymptotic chi2 p and the approximate BB-lite screening-toy p (stats.gof_verdict)
     ty = (res['toys_screen'].get(var) or {}).get('shared') or {}
     p_toy = ty.get('p_gof_toys')
     p_asym = f.get('p_gof')
-    if p_toy is not None:
-        gof_bad = p_toy <= max(T['gof_p'], ty['gof']['p_observed_resolution'])
-    else:
-        gof_bad = p_asym is not None and p_asym < T['gof_p']
+    gv = st.gof_verdict(p_asym, ty) if f.get('status') == 'ok' else None
     # binning dependence of the shared-era SFs (in units of the nominal error)
     bins = (res['binning'].get(var) or {}).get('shared') or {}
     spread = 0.0
@@ -397,7 +395,10 @@ def _native_metrics(res, var):
         median_rel_major_indep=ind.get('median_rel_major'), max_corr_indep=ind.get('max_corr'),
         p_gof_shared=p_asym, p_gof_toys_shared=p_toy,
         p_gof_indep=(fits.get('independent') or {}).get('p_gof'),
-        gof_ok=not gof_bad if f.get('status') == 'ok' else False,
+        gof_verdict=gv['verdict'] if gv else None, gof_reasons=gv['reasons'] if gv else [],
+        n_toys_gof_shared=gv['n_toys_valid'] if gv else None,
+        toy_resolution_shared=gv['toy_resolution'] if gv else None,
+        gof_ok=bool(gv and gv['verdict'] == 'adequate'),
         dev_ndf_shared=(f['deviance'] / f['ndf'] if f.get('status') == 'ok' and f.get('ndf') else None),
         binning_spread_shared=spread)
 
@@ -444,7 +445,9 @@ def rank_variables(res, cands):
         why += [f"native MC support: {s}" for s in row['mc_support_issues']]
         if row['native_fit_ok'] and not row['gof_ok']:
             pt = row['p_gof_toys_shared']
-            why.append(f"native GoF: p = {_fmt(row['p_gof_shared'])}" + (f" (toys {_fmt(pt)})" if pt is not None else ""))
+            why.append(f"native GoF {row['gof_verdict']}: asymptotic p = {_fmt(row['p_gof_shared'])}"
+                       + (f", approx. toy p = {_fmt(pt)} ({row['n_toys_gof_shared']} toys)" if pt is not None else "")
+                       + (f" [{'; '.join(row['gof_reasons'])}]" if row['gof_reasons'] else ""))
         if not row['common_fit_ok']:
             why.append("common-selection shared-era fit failed")
         elif not row['regular_shared_common']:
@@ -468,7 +471,8 @@ def rank_variables(res, cands):
         if not r.get('native_fit_ok'):
             return (3, 0, 0, np.inf)
         clean = not (r['pathologies'] or r['unstable'] or r['mc_support_issues'])
-        return (0 if clean else 1, 0 if r['gof_ok'] else 1, -(r['n_identified_shared'] or 0),
+        return (0 if clean else 1, {'adequate': 0, 'inconclusive': 1}.get(r['gof_verdict'], 2),
+                -(r['n_identified_shared'] or 0),
                 _num(r['median_rel_major_shared']))
 
     order_common = sorted(rows, key=lambda v: common_key(rows[v]))
@@ -591,13 +595,17 @@ def _fmt(x, f="{:.3g}"):
 
 
 def _gof_inadequate(f, ext_bb):
-    """GoF verdict of a fit: model-consistent toy p when available, else the asymptotic chi2 p."""
-    T = st.THRESHOLDS
-    if ext_bb and ext_bb.get('p_gof_toys') is not None:
-        p = ext_bb['p_gof_toys']
-        return p <= max(T['gof_p'], ext_bb['gof']['p_observed_resolution']), p, 'BB-lite toys'
-    p = f.get('p_gof')
-    return (p is not None and p < T['gof_p']), p, 'asymptotic chi2'
+    """
+    GoF of a fit (stats.gof_verdict on the asymptotic p and the approximate BB-lite toy p).
+    Returns (not adequate, verdict dict, description). An inconclusive verdict is not adequate:
+    small parameter errors are then not counted as a measurement.
+    """
+    gv = st.gof_verdict(f.get('p_gof'), ext_bb or None)
+    desc = (f"asymptotic p = {_fmt(gv['p_asymptotic'])}"
+            + (f", approx. BB-lite toy p = {_fmt(gv['p_toys'])} ({gv['n_toys_valid']} toys, resolution "
+               f"{_fmt(gv['toy_resolution'])})" if gv['p_toys'] is not None else "")
+            + (f"; {'; '.join(gv['reasons'])}" if gv['reasons'] else ""))
+    return gv['verdict'] != 'adequate', gv, desc
 
 
 def assess(ctx, kind, res):
@@ -699,13 +707,15 @@ def assess(ctx, kind, res):
         tsum.append(f"{ens} ({ty['n_valid']}/{ty['n_toys']} valid fits, {ty['n_failed']} failed, "
                     f"{ty['n_not_converged']} not converged, singular {ty['frac_singular']:.2f}, any bound "
                     f"{ty['frac_any_bound']:.2f}): pull mean/width {pw}; closure {'ok' if ty['closure_ok'] else 'FAILS'}; "
-                    + (f"GoF toy p = {_fmt(ty['p_gof_toys'])}" if ty['gof']['calibrated'] else
-                       "GoF not calibrated in this ensemble"))
+                    + (f"approx. GoF toy p = {_fmt(ty['p_gof_toys'])} (resolution "
+                       f"{_fmt(ty['gof']['p_observed_resolution'])})" if ty['gof']['estimates_observed_p'] else
+                       "no GoF p of the observed data from this ensemble"))
     if tsum:
         A['toys'] = tsum
     tp = ext.get('per_param', {})
 
-    inadequate, p_g, p_src = _gof_inadequate(f, ext)
+    inadequate, gv, gdesc = _gof_inadequate(f, ext)
+    A['gof_verdict'] = gv['verdict']
     cons, need, precise_inadequate = [], [], []
     for p, idf in f['identifiability'].items():
         t = tp.get(p, {})
@@ -728,8 +738,9 @@ def assess(ctx, kind, res):
     A['precise_but_model_inadequate'] = precise_inadequate
     A['backgrounds_needing_treatment'] = need + [f"{p} (no MC in the fit range; fixed)" for p in f.get('absent', [])]
     if precise_inadequate:
-        A['inconclusive'].append(f"{len(precise_inadequate)} SF(s) have small nominal errors but the {em} model does not "
-                                 f"describe {var} (GoF p = {_fmt(p_g)}, {p_src}): not counted as constrained")
+        A['inconclusive'].append(f"{len(precise_inadequate)} SF(s) have small nominal errors but the {em} model "
+                                 + ("does not describe" if gv['verdict'] == 'inadequate' else "is not shown to describe")
+                                 + f" {var} (GoF {gv['verdict']}: {gdesc}): not counted as constrained")
 
     # variants of the weak processes
     for lab in (f"{em}_fixweak", f"{em}_priorweak"):
@@ -808,14 +819,17 @@ def assess(ctx, kind, res):
     # goodness of fit and validation
     g = ext.get('gof') or {}
     A['gof'] = (f"-2lnL = {f['deviance']:.1f} for ndf {f['ndf']} (asymptotic p = {_fmt(f['p_gof'])}"
-                + (f", BB-lite toy p = {_fmt(ext.get('p_gof_toys'))} with resolution {_fmt(g.get('p_observed_resolution'))}; "
+                + (f", approximate BB-lite toy p = {_fmt(ext.get('p_gof_toys'))} from {g.get('n_effective')} valid toys "
+                   f"(resolution {_fmt(g.get('p_observed_resolution'))}); "
                    f"toy -2lnL mean/ndf {_fmt(g.get('mean_over_ndf'))}, KS p vs chi2(ndf) {_fmt(g.get('ks_p_vs_chi2_ndf'))}"
                    if ext.get('p_gof_toys') is not None else "")
                 + f"); prefit -2lnL {f['deviance_pre']:.1f}; "
-                f"{f['nbins_excluded']} bins without MC, {f['data_excluded']:.0f} data events not fitted")
+                f"{f['nbins_excluded']} bins without MC, {f['data_excluded']:.0f} data events not fitted; "
+                f"verdict {gv['verdict']}" + (f" ({'; '.join(gv['reasons'])})" if gv['reasons'] else ""))
     if g.get('ks_p_vs_chi2_ndf') is not None and g['ks_p_vs_chi2_ndf'] < T['gof_p']:
         A['limitations'].append(f"the toy -2lnL distribution of {var} is not chi2(ndf) (KS p = "
-                                f"{_fmt(g['ks_p_vs_chi2_ndf'])}): use the toy GoF p, not the asymptotic one")
+                                f"{_fmt(g['ks_p_vs_chi2_ndf'])}): the asymptotic GoF p is unreliable; the toy p is "
+                                f"itself approximate (Gamma vs Gaussian MC nuisance)")
     val = res['validation'].get(var, {}).get(em, {})
     vtxt, vbad = [], []
     for tgt, v in val.items():
@@ -839,8 +853,10 @@ def assess(ctx, kind, res):
 
     # model adequacy
     tags = []
-    if inadequate:
-        A['limitations'].append(f"normalization-only model does not describe {var} (GoF p = {_fmt(p_g)}, {p_src})")
+    if gv['verdict'] == 'inconclusive':
+        A['limitations'].append(f"goodness of fit of the {em} model on {var} inconclusive ({gdesc})")
+    if gv['verdict'] == 'inadequate':
+        A['limitations'].append(f"normalization-only model does not describe {var} (GoF: {gdesc})")
         if need or r0['pathologies']:
             tags.append("poorly constrained process mixture")
         rp = res['residuals']['native'][var].get(em, {})
@@ -1099,7 +1115,8 @@ def _draw_toys(ctx, base, var, res):
                 f"toy -2lnL at the minimum, {em} ({var}), {name} ensemble", "-2 ln L", dv, 40, 0, hi,
                 lines=[(f['deviance'], ROOT.kRed + 1)],
                 notes=[f"observed {f['deviance']:.1f}, ndf {g['ndf']}",
-                       f"toy p = {g['p_observed']:.3f}" if g['calibrated'] else "not a calibrated GoF p (see report)",
+                       f"approx. toy p = {g['p_observed']:.3f} ({g['n_effective']} toys)" if g['estimates_observed_p']
+                       else "not a GoF p of the observed data (see report)",
                        f"KS p vs #chi^{{2}}(ndf) = {_fmt(g.get('ks_p_vs_chi2_ndf'))}"]),
                 f"toys_gof_{tag}")
             pp = ty['per_param']
@@ -1272,42 +1289,82 @@ def study_analysis(ctx, audit, regions=None):
     return res
 
 
-def completion_issues(name, res):
-    """Required studies that did not produce results (an empty list = complete)."""
-    out = []
-    for kind, R in res.get('regions', {}).items():
+def completion_issues(name, res, requested=None):
+    """
+    Execution completeness of one analysis (not the physics verdict: a fully executed study
+    may conclude that no model is adequate). Returns {'failed', 'partial', 'notes'} lists:
+
+      failed   a required computation raised an error, or an integrity check failed
+               (region study exception, validation without its combined-era result, stability
+               scan error, record / loader or reference-yield mismatch, requested region absent)
+      partial  a requested study could not be performed (no MC, unblinded region without data,
+               production fit refused, screening / extended toys or the focus stability scan
+               not run, extended toys without valid fits, no event-partition validation)
+      notes    expected omissions (data blinded by configuration)
+    """
+    failed, partial, notes = [], [], []
+    regions = res.get('regions', {})
+    for kind in (requested or REGION_KINDS):
+        if kind not in regions:
+            failed.append(f"[{name}] {kind}: requested region was not studied")
+    for kind, R in regions.items():
         tag = f"[{name}] {kind}"
         if R.get('error'):
-            out.append(f"{tag}: {R['status']}")
+            failed.append(f"{tag}: {R['status']}")
             continue
-        if R.get('status') or not R.get('has_data'):
-            continue   # no MC / no data: reported in the region, nothing required
-        nat = R['fits']['native']
-        for var, fits in nat.items():
+        if R.get('status'):
+            partial.append(f"{tag}: {R['status']}: no study performed")
+            continue
+        if not R.get('has_data'):
+            if R.get('blind'):
+                notes.append(f"{tag}: data blinded by configuration: no fits (expected)")
+            else:
+                partial.append(f"{tag}: no data for at least one candidate observable: fits, toys and validation "
+                               f"not performed")
+            continue
+        for var, fits in R['fits']['native'].items():
             for em in ERA_MODELS:
-                if (fits.get(em) or {}).get('status') != 'ok':
-                    out.append(f"{tag}: native {em} fit of {var} failed: {(fits.get(em) or {}).get('error')}")
+                f = fits.get(em) or {}
+                if f.get('status') != 'ok':
+                    partial.append(f"{tag}: native {em} fit of {var} not performed: {f.get('error')}")
+                    continue
+                if not (R.get('toys_screen') or {}).get(var, {}).get(em):
+                    partial.append(f"{tag}: screening toys of {var} ({em}) not run")
         for var, ems in R.get('validation', {}).items():
             for em, vv in ems.items():
                 for tgt, v in vv.items():
                     if 'total' not in v:
-                        out.append(f"{tag}: validation {var} -> {tgt} ({em}) has no combined-era result")
+                        failed.append(f"{tag}: validation {var} -> {tgt} ({em}) has no combined-era result")
         focus = R.get('focus_var')
         if focus:
-            for em, ens in (R.get('toys_extended') or {}).items():
-                for e, ty in ens.items():
+            fits = R['fits']['native'].get(focus) or {}
+            ext = R.get('toys_extended') or {}
+            for em in ERA_MODELS:
+                if (fits.get(em) or {}).get('status') != 'ok':
+                    continue
+                if not ext.get(em):
+                    partial.append(f"{tag}: extended toys of {focus} ({em}) not run")
+                for e, ty in (ext.get(em) or {}).items():
                     if ty.get('status') != 'ok':
-                        out.append(f"{tag}: {e} toys of {focus} ({em}): {ty.get('status')} {ty.get('reason', '')}")
+                        partial.append(f"{tag}: {e} toys of {focus} ({em}): {ty.get('status')} {ty.get('reason', '')}")
+                sc = (R.get('stability') or {}).get(focus, {}).get(em) or {}
+                if sc.get('status') == 'skipped':
+                    partial.append(f"{tag}: stability scan of {focus} ({em}) skipped: {sc.get('reason')}")
         for var, ems in (R.get('stability') or {}).items():
             for em, sc in ems.items():
                 if sc.get('status') == 'failed':
-                    out.append(f"{tag}: stability scan of {var} ({em}) failed: {sc.get('error')}")
+                    failed.append(f"{tag}: stability scan of {var} ({em}) failed: {sc.get('error')}")
         part = R.get('partition') or {}
         if not any(k not in PARTITION_META for k in part):
-            out.append(f"{tag}: no event-partition validation")
+            partial.append(f"{tag}: no event-partition validation")
     if res.get('record_check'):
-        out.append(f"[{name}] {len(res['record_check'])} record / loader histogram mismatches")
+        failed.append(f"[{name}] {len(res['record_check'])} record / loader histogram mismatches")
     for r in res.get('reference') or []:
         if r.get('status') != 'ok':
-            out.append(f"[{name}] reference yields {r['region']}:{r['var']} {r['sample']}: {r['status']}")
-    return out
+            failed.append(f"[{name}] reference yields {r['region']}:{r['var']} {r['sample']}: {r['status']}")
+    return OrderedDict(failed=failed, partial=partial, notes=notes)
+
+
+def completion_status(parts):
+    """'failed' / 'partial' / 'complete' from completion_issues-style lists."""
+    return 'failed' if parts.get('failed') else 'partial' if parts.get('partial') else 'complete'

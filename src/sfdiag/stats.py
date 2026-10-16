@@ -754,14 +754,62 @@ TOY_ENSEMBLES = OrderedDict([
      "is too narrow to calibrate the observed GoF."),
     ('bb_lite',
      "data ~ Poisson(nu(theta_true)) and, per bin, the total MC rescaled by one factor g_i ~ Gamma with "
-     "mean 1 and relative width d_i = sqrt(sum s^2 V) / nu (all processes coherently): the generative "
-     "model of the Barlow-Beeston-lite likelihood (one nuisance per bin on the total MC). Model-consistent "
-     "ensemble for closure, coverage and GoF calibration of the production likelihood."),
+     "mean 1 and relative width d_i = sqrt(sum s^2 V) / nu (all processes coherently). APPROXIMATION of the "
+     "production BB-lite likelihood, which constrains its per-bin nuisance beta_i with a Gaussian term "
+     "(beta_i - 1)^2 / d_i^2: Gamma and Gaussian agree for small d_i but differ (skew, positivity) in bins with "
+     "poor effective MC statistics. Primary ensemble for closure, coverage and an approximate toy GoF p; "
+     "its p-value is an estimate, not an exact calibration."),
     ('mc_template',
      "data ~ Poisson(nu(theta_true)) and every process template fluctuated independently per bin, "
      "T'_ki ~ Gamma with mean T_ki and variance V_ki (the actual sampling of independent MC samples). "
-     "Checks the BB-lite approximation; bins with T_ki <= 0 or V_ki <= 0 are not fluctuated (counted)."),
+     "Supplementary check of the BB-lite approximation; bins with T_ki <= 0 or V_ki <= 0 are not "
+     "fluctuated (counted)."),
 ])
+TOY_PRIMARY = 'bb_lite'   # the ensemble whose (approximate) toy GoF p enters the classifications
+
+
+def gof_verdict(p_asym, toys=None):
+    """
+    Conservative goodness-of-fit verdict from the nominal asymptotic chi2(ndf) p-value of the
+    -2lnL and, when available, the approximate toy p-value of one run_toys() result.
+
+      adequate      no available estimate indicates a misfit
+      inadequate    every available estimate indicates a misfit
+      inconclusive  the estimates disagree, or none is available
+
+    A toy ensemble with n valid fits has p-value resolution 1/(n+1). When that is not below
+    THRESHOLDS['gof_p'] the ensemble cannot show p < gof_p: it indicates a misfit only when the
+    observed -2lnL exceeds every toy, and it never overrides an asymptotic misfit on its own
+    (the disagreement is reported as inconclusive, not adequate).
+    """
+    thr = THRESHOLDS['gof_p']
+    out = OrderedDict(verdict='inconclusive', threshold=thr, p_asymptotic=p_asym, p_toys=None,
+                      n_toys_valid=None, toy_resolution=None, toy_resolves_threshold=None, reasons=[])
+    asym_bad = None if p_asym is None else bool(p_asym < thr)
+    toy_bad = None
+    g = (toys or {}).get('gof') or {}
+    if toys and toys.get('p_gof_toys') is not None:
+        n, res = toys.get('n_valid') or 0, g['p_observed_resolution']
+        out.update(p_toys=toys['p_gof_toys'], n_toys_valid=n, toy_resolution=res, toy_resolves_threshold=bool(res < thr))
+        toy_bad = bool(toys['p_gof_toys'] <= max(thr, res))
+        if res >= thr:
+            out['reasons'].append(f"toy p-value resolution {res:.3g} ({n} valid toys) does not resolve the "
+                                  f"threshold {thr:g}")
+    if asym_bad is None and toy_bad is None:
+        out['reasons'].append("no GoF estimate (ndf <= 0 and no toys)")
+        return out
+    if asym_bad is None:
+        verdict = 'inadequate' if toy_bad else ('adequate' if out['toy_resolves_threshold'] else 'inconclusive')
+    elif toy_bad is None:
+        verdict = 'inadequate' if asym_bad else 'adequate'
+    elif asym_bad == toy_bad:
+        verdict = 'inadequate' if asym_bad else 'adequate'
+    else:
+        verdict = 'inconclusive'
+        out['reasons'].append(f"asymptotic p {p_asym:.3g} and approximate toy p {out['p_toys']:.3g} disagree "
+                              f"about the threshold {thr:g}")
+    out['verdict'] = verdict
+    return out
 
 
 def _gamma_scale(rng, mean, var):
@@ -913,13 +961,26 @@ def run_toys(res, n_toys, seed, theta_true=None, ensemble='bb_lite', stress_labe
     obs = res['deviance']
     n_ge = int(np.sum(DV >= obs))
     gof['p_observed'] = float((n_ge + 1) / (len(DV) + 1))        # conservative: never 0
+    gof['n_effective'] = int(len(DV))
     gof['p_observed_resolution'] = float(1.0 / (len(DV) + 1))
-    gof['calibrated'] = ensemble in ('bb_lite', 'mc_template') and stress_label is None and source != 'requested'
-    gof['note'] = ("toy p-value of the observed -2lnL in this ensemble" if gof['calibrated'] else
-                   "NOT a calibrated GoF p-value of the observed data (ensemble or injection point not the "
-                   "fitted model)")
+    gof['resolves_threshold'] = bool(gof['p_observed_resolution'] < THRESHOLDS['gof_p'])
+    # an (approximate) estimate of the GoF p of the observed data only for an ensemble that
+    # fluctuates the MC like the likelihood does, injected at the observed best fit
+    gof['estimates_observed_p'] = ensemble in ('bb_lite', 'mc_template') and stress_label is None and source != 'requested'
+    gof['approximation'] = ("Gamma-fluctuated MC approximating the Gaussian-constrained BB-lite nuisance"
+                            if ensemble == 'bb_lite' else
+                            "independent per-template MC fluctuations (supplementary)" if ensemble == 'mc_template' else
+                            "MC templates not fluctuated")
+    if not gof['estimates_observed_p']:
+        gof['note'] = ("NOT a GoF p-value of the observed data (ensemble does not fluctuate the MC, or injection "
+                       "point not the fitted model)")
+    else:
+        gof['note'] = (f"approximate toy p-value of the observed -2lnL ({gof['approximation']}), "
+                       f"{len(DV)} valid toys, resolution {gof['p_observed_resolution']:.3g}"
+                       + ("" if gof['resolves_threshold'] else
+                          f": cannot resolve p < {THRESHOLDS['gof_p']:g}"))
     out['gof'] = gof
-    out['p_gof_toys'] = gof['p_observed'] if gof['calibrated'] else None
+    out['p_gof_toys'] = gof['p_observed'] if gof['estimates_observed_p'] else None
     out['closure_ok'] = bool(all(
         (v['pull_mean'] is None or abs(v['pull_mean']) < THRESHOLDS['toy_bias']) and
         (v['pull_width'] is None or THRESHOLDS['toy_width'][0] <= v['pull_width'] <= THRESHOLDS['toy_width'][1]) and

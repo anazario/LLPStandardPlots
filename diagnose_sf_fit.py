@@ -15,6 +15,10 @@ Outputs (in --output):
   tables/*.csv                      flat tables
   sf_diagnostics_summary.html       per-case assessment
 
+Exit status: 0 complete, 2 partial (some requested studies could not be performed, e.g.
+missing inputs), 1 failed (a required computation raised an error or an integrity check
+failed). The status describes the execution, not whether the fit models are adequate.
+
 Example
 -------
   python3 diagnose_sf_fit.py \\
@@ -131,9 +135,13 @@ def audit_view(audit, name):
     return out
 
 
-def audit_summary(cfgs, audit, adatas):
-    """File table and the list of input issues."""
-    rows, issues = [], []
+def audit_summary(cfgs, audit, adatas, regions=None):
+    """
+    File table, the list of input issues, and the missing inputs (configured patterns without
+    files, unreadable files, file x requested-region combinations excluded for missing branches)
+    that make the run partial.
+    """
+    rows, issues, missing_inputs = [], [], []
     for c in cfgs:
         raw = c['raw_patterns']
         for sect in ('background', 'data'):
@@ -145,6 +153,7 @@ def audit_summary(cfgs, audit, adatas):
                     n = len(_expand_globs([pat], raw.get('base_dir')))
                     if n == 0:
                         issues.append(f"[{c['name']}] {sect} pattern matches no file: {pat}")
+                        missing_inputs.append(f"[{c['name']}] {sect} pattern matches no file: {pat}")
         # files listed in more than one group / pattern
         seen = {}
         for sect, groups in (('background', c['bg_groups']), ('data', c['data_groups'])):
@@ -197,6 +206,7 @@ def audit_summary(cfgs, audit, adatas):
         rows.append(row)
         if a.get('error'):
             issues.append(f"{Path(f).name}: {a['error']}")
+            missing_inputs.append(f"{Path(f).name}: unreadable input ({a['error']})")
         if missing.get('triggers'):
             if not a.get('triggers_available'):
                 issues.append(f"{Path(f).name}: NO MET trigger branch present: the loader applies no trigger requirement")
@@ -215,7 +225,13 @@ def audit_summary(cfgs, audit, adatas):
                           f"{AnalysisConfig.EVT_WGT_CUT:g} and is removed by the baseline weight cut")
         if w and w.get('n_neg'):
             issues.append(f"{Path(f).name}: {w['n_neg']} negative-weight events (sum {w['sumw_neg']:.3g})")
-    return rows, issues
+    for an, ad in adatas.items():
+        for x in ad.get('excluded') or []:
+            kind = (ad['regions'].get(x['region']) or {}).get('kind', x['region'])
+            if regions is None or kind in regions:
+                missing_inputs.append(f"[{an}] {Path(x['file']).name} excluded from {x['region']} "
+                                      f"(missing branches {', '.join(x['missing'])})")
+    return rows, issues, missing_inputs
 
 
 # --------------------------------------------------------------------------- #
@@ -325,7 +341,7 @@ def main(argv=None):
 
     refs = dict(x.split('=', 1) for x in opts.reference_yields)
     results = OrderedDict()
-    file_rows, issues = audit_summary(cfgs, audit, adatas)
+    file_rows, issues, missing_inputs = audit_summary(cfgs, audit, adatas, opts.regions)
     not_executed = []
     if not refs:
         not_executed.append("regression against existing yields files (pass --reference-yields CONFIG=YIELDS)")
@@ -351,8 +367,13 @@ def main(argv=None):
         if ref:
             res['reference'] = di.compare_reference_yields(a, ref)
         results['analyses'][c['name']] = res
-    issues_run = [x for an, A in results['analyses'].items() for x in sd.completion_issues(an, A)]
-    results['completion'] = OrderedDict(status='complete' if not issues_run else 'incomplete', issues=issues_run)
+    comp = OrderedDict(failed=[], partial=list(missing_inputs), notes=[])
+    for an, A in results['analyses'].items():
+        for k, v in sd.completion_issues(an, A, opts.regions).items():
+            comp[k] += v
+    # 'issues' (failed + partial) kept for readers of earlier outputs
+    results['completion'] = OrderedDict(status=sd.completion_status(comp), issues=comp['failed'] + comp['partial'],
+                                        **comp)
     summary_canvases(rout, results)
     st.shutdown_workers()
     n_canvases = rout.n
@@ -396,14 +417,20 @@ def main(argv=None):
                   f"{a.get('recommended_binning')}, Run2/Run3 {a.get('era_model')}; "
                   f"limitations: {'; '.join(a.get('limitations', [])) or 'none flagged'}")
     comp = results['completion']
-    if comp['issues']:
-        print(f"\nINCOMPLETE: {len(comp['issues'])} required stud{'y' if len(comp['issues']) == 1 else 'ies'} "
-              f"failed or produced no result:")
-        for x in comp['issues']:
-            print(f"  - {x}")
-    print(f"{'done' if not comp['issues'] else 'finished with failures'} in {time.time() - t0:.0f} s")
+    expl = {'complete': "all requested studies produced results (the physics verdicts are in the report)",
+            'partial': "useful results, but some requested studies could not be performed",
+            'failed': "a required computation raised an error or an integrity check failed"}
+    print(f"\nCompletion status: {comp['status'].upper()}: {expl[comp['status']]}")
+    for lab in ('failed', 'partial'):
+        for x in comp[lab]:
+            print(f"  - [{lab}] {x}")
+    for x in comp['notes']:
+        print(f"  - [expected] {x}")
+    print(f"finished in {time.time() - t0:.0f} s")
     return results
 
 
+EXIT_CODES = {'complete': 0, 'failed': 1, 'partial': 2}
+
 if __name__ == "__main__":
-    sys.exit(0 if main()['completion']['status'] == 'complete' else 1)
+    sys.exit(EXIT_CODES[main()['completion']['status']])

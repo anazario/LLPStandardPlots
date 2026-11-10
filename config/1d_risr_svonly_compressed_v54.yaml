@@ -1,0 +1,48 @@
+# Slide 5 of the EXO LLP talk (June 19 2026), updated to full Run 2 + Run 3 (2016-2026).
+#   CustomRegion1 -> datas_isr_risr_CustomRegion1.pdf   (top panel: data, SV-only anchor CR)
+#   CustomRegion2 -> signals_isr_risr_CustomRegion2.pdf (bottom panel: signals, SV-only SR)
+# Data in CustomRegion2 is blinded automatically (HighDxySigSR flag).
+#
+# Run on cmslpc:  python main.py --input-config config/1d_risr_svonly_compressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51          # plots are unit-normalized; this only sets the header
+energy: 13.6
+analysis_type: compressed
+isr_pt_cut: 500       # kinSV floor (main.py default is 700)
+plots: [1d]
+vars: [rjrIsr_RIsr]
+normalize: true
+format: root
+output: 1d_risr_svonly_compressed_v54
+
+# SVonly_AnchorCR / SVonly_SR from LittleGuy_Compressed_FullRegions_AnalysisConfig_KinParams.yaml:
+#   kinSV + geq1SV_{CR,SR} + noPho, plus the rjrPTS cut from Cleaning (the other
+#   Cleaning cuts are in main.py's baseline). No RISR bin: full spectrum from 0.4.
+flags:
+  - cut: "(rjrIsr_PtIsr > 500) & (rjrIsr_nSVisObjects > 0) & (rjrIsr_RIsr >= 0.4) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (nBaseLinePhotons == 0)"
+    region_type: sv
+  - cut: "(rjrIsr_PtIsr > 500) & (rjrIsr_nSVisObjects > 0) & (rjrIsr_RIsr >= 0.4) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (nBaseLinePhotons == 0)"
+    region_type: sv
+
+# v38 signal MC. Relative paths resolve against base_dir; use absolute paths
+# if these live in a different directory than the data.
+signal:
+  - gogoGZ_mGl-2300_mN2-2250_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-2200_mN1-2100_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-2200_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+
+# Full Run 2 + Run 3, 2016-2026 (449.51 fb^-1). Only the
+# *_testRjrskimBranchMask_v54.root test copy of 2017B is left out (duplicate).
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

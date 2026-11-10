@@ -214,6 +214,12 @@ def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path=
 _save_canvas_impl = save_canvas  # module-level alias used by the wrapper inside main()
 
 
+def binning_1d_for(args):
+    """(nbins, xmin, xmax) for a 1D plot: the YAML binning_1d override, else the variable's own."""
+    overrides = getattr(args, 'binning_1d', None) or {}
+    return lambda var_key, conf: overrides.get(var_key, (conf['bins'], *conf['range']))
+
+
 def is_event_flag(flag_string):
     """Check if the string is a predefined event flag (starts with 'pass') or a custom cut."""
     return flag_string.startswith('pass')
@@ -386,6 +392,7 @@ def main():
     # Set default variables based on mode if not specified
     if args.vars is None:
         args.vars = mode_config['default_vars']
+    binning_1d = binning_1d_for(args)
 
     # Handle ISR pT cut - only relevant in compressed mode
     isr_pt_cut = None
@@ -919,9 +926,8 @@ def main():
                 
                 short_name = conf['name']
                 label = conf['label']
-                nbins = conf['bins']
-                xmin, xmax = conf['range']
-                
+                nbins, xmin, xmax = binning_1d(var_key, conf)
+
                 # 1. All Signals
                 if current_sig_data:
                     c_sig = plotter1d.plot_collection(current_sig_data, short_name, label, nbins, xmin, xmax, collection_type="Signal", normalized=args.normalize, suffix=flag, final_state_label=fs_label_latex)
@@ -976,8 +982,7 @@ def main():
                         continue
                     short_name = conf['name']
                     label = conf['label']
-                    nbins = conf['bins']
-                    xmin, xmax = conf['range']
+                    nbins, xmin, xmax = binning_1d(var_key, conf)
 
                     canvas = plotter1d.plot_cr_data_vs_sr_signal(
                         cr_data_collection, current_sig_data,

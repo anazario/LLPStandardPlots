@@ -57,7 +57,7 @@ except ImportError:
             return leg
 from src.style import StyleManager
 from src.utils import parse_signal_name, parse_background_name
-from src.config import AnalysisConfig
+from src.config import AnalysisConfig, plane_key
 from src.unrolled import UnrolledBinning
 
 ROOT.gROOT.ForceStyle(False)
@@ -220,10 +220,13 @@ class Plotter1D(PlotterBase):
         for h in hists[1:]:
             h.Draw(f"{draw_opt} SAME")
 
-        legend.Draw()
+        if len(hists) > 1:  # no legend for a single curve
+            legend.Draw()
         canvas.SetLogy()
-        # Use common CMS label drawing, optimized for 1D
-        self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos, prelim_x=0.248, lumi_x=0.9, cms_text_size_mult=1.)
+        # Use common CMS label drawing, optimized for 1D; real data is "Preliminary", MC is "Simulation"
+        self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos,
+                                   prelim_str="Preliminary" if is_data_type else "Simulation",
+                                   prelim_x=0.248, lumi_x=0.9, cms_text_size_mult=1.)
 
         # Draw Region Label
         self._draw_region_label(canvas, final_state_label, plot_type="1d")
@@ -571,15 +574,22 @@ class Plotter2D(PlotterBase):
         x_data_key = self._map_var_name(x_conf['name'])
         y_data_key = self._map_var_name(y_conf['name'])
 
-        # Try branch name first, then mapped name
-        x_data = data.get(x_var, data.get(x_data_key, []))
-        y_data = data.get(y_var, data.get(y_data_key, []))
+        # Prefer the loader's per-event (x, y, w) arrays for this plane. The
+        # per-variable arrays carry different N-1 cuts, so zipping them pairs
+        # values from different events; they are only a fallback.
+        key = plane_key(x_var, y_var)
+        if f'{key}x' in data:
+            x_data, y_data, weights = data[f'{key}x'], data[f'{key}y'], data[f'{key}w']
+        else:
+            x_data = data.get(x_var, data.get(x_data_key, []))
+            y_data = data.get(y_var, data.get(y_data_key, []))
+            weights = data['weights']
 
         if len(x_data) == 0 or len(y_data) == 0:
             print(f"  Warning: No data for 2D plot {name} (x_var={x_var}, y_var={y_var})")
             return None, None
 
-        hist = self.create_2d_histogram(x_data, y_data, data['weights'],
+        hist = self.create_2d_histogram(x_data, y_data, weights,
                                       x_conf['bins'], x_min, x_max,
                                       y_conf['bins'], y_min, y_max, name)
         if not self._hist_has_content(hist):
@@ -627,11 +637,37 @@ class Plotter2D(PlotterBase):
         cms_label = "Preliminary" if is_data else "Simulation"
         self.style.draw_cms_labels(prelim_str=cms_label)
         self.style.draw_process_label(sample_label, x_pos=sample_label_x_pos, y_pos=0.87)
-        self._draw_region_label(canvas, final_state_label, x_pos=0.425, plot_type="2d")
-        
+        if final_state_label:
+            x_pos, y_pos = self._region_label_slot_2d(canvas, cms_label, final_state_label)
+            self._draw_region_label(canvas, final_state_label, x_pos=x_pos, y_pos=y_pos, plot_type="2d")
+
         canvas.Update() # Update after adding labels
-        
+
         return canvas, hist
+
+    def _ndc_text_width(self, canvas, text, font, size):
+        """Width of a TLatex string in NDC units on this canvas."""
+        latex = ROOT.TLatex(0, 0, text)
+        latex.SetTextFont(font)
+        latex.SetTextSize(size)
+        canvas.cd()
+        return latex.GetXsize() / (canvas.GetX2() - canvas.GetX1())
+
+    def _region_label_slot_2d(self, canvas, prelim_str, label):
+        """Put the region label on the header line, between 'CMS <Preliminary>' and the
+        luminosity, when it fits there; otherwise inside the frame, top left."""
+        st = self.style
+        gap = 0.015
+        prelim_end = st.prelim_x_pos + self._ndc_text_width(canvas, prelim_str, 52, st.prelim_text_size)
+        lumi_value = f"{st.luminosity:g}" if st.luminosity == int(st.luminosity) else f"{st.luminosity}"
+        lumi_text = f"{lumi_value} fb^{{-1}} ({st.energy_label or f'{st.energy} TeV'})"
+        lumi_start = st.lumi_x_pos - self._ndc_text_width(canvas, lumi_text, 42, st.lumi_text_size)
+        width = self._ndc_text_width(canvas, label, 42, st.sample_label_size)
+        if prelim_end + gap + width <= lumi_start - gap:
+            # centre it in the free space
+            free = (lumi_start - gap) - (prelim_end + gap)
+            return prelim_end + gap + (free - width) / 2, st.cms_y_pos
+        return canvas.GetLeftMargin() + 0.03, 0.87
 
 class PlotterDataMC(PlotterBase):
     def __init__(self, style_manager):

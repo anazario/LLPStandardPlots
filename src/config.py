@@ -370,3 +370,8 @@ class ModeConfig:
     def get(cls, mode):
         """Get configuration for the specified analysis mode."""
         return cls.COMPRESSED if mode == AnalysisMode.COMPRESSED else cls.UNCOMPRESSED
+
+
+def plane_key(x_var, y_var):
+    """Prefix of the paired 2D-plane arrays the loader stores: <prefix>x, <prefix>y, <prefix>w."""
+    return f"plane2d__{x_var}__{y_var}__"

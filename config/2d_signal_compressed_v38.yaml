@@ -1,0 +1,22 @@
+# Slide 4 of the EXO LLP talk (June 19 2026): compressed signal benchmark, PtISR vs RISR.
+# Signal only (no data), so it runs fast. Output:
+#   2d_signal_compressed_v38/CustomRegion1/2D_plots/sig_2d_gogoGZ_mGl-2300_mN2-2250_mN1-2200_ct0p1_..._CustomRegion1_ptISR_vs_RISR.pdf
+#
+# Run on cmslpc:  python main.py --input-config config/2d_signal_compressed_v38.yaml
+
+base_dir: /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v54   # check path (same as the data config)
+
+lumi: 449.51
+energy: 13.6
+analysis_type: compressed
+plots: [2d]
+format: pdf
+output: 2d_signal_compressed_v38
+
+# SV-only SR without the PtISR/RISR cuts, so the plot shows the full plane
+flags:
+  - cut: "(rjrIsr_nSVisObjects > 0) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (nBaseLinePhotons == 0)"
+    region_type: sv
+
+signal:
+  - gogoGZ_mGl-2300_mN2-2250_mN1-2200_ct0p1__SVHPM100_FullMini_v38__rjrskim.root

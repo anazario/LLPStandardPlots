@@ -225,6 +225,8 @@ def load_input_config(yaml_path):
         'isr_pt_cut', 'normalize', 'yields', 'sf_fit'
     )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
+    if cfg.get('binning_1d'):
+        overrides['binning_1d'] = _parse_binning_1d(cfg['binning_1d'])
     if 'sf_fit' in overrides and overrides['sf_fit'] is None:
         overrides['sf_fit'] = {}  # bare `sf_fit:` -> fit with the defaults
     if overrides.get('sf_fit') is False:
@@ -235,22 +237,36 @@ def load_input_config(yaml_path):
         raw_fmt = cfg['format']
         overrides['format'] = [raw_fmt] if isinstance(raw_fmt, str) else list(raw_fmt)
 
-    # Parse flags — each entry may be a plain string or {cut: "...", blind: true, region_type: "sv"|"pho"}
+    # Parse flags — each entry may be a plain string or
+    # {cut: "...", blind: true, region_type: "sv"|"pho", label: "Region: ..."}
     raw_flags = cfg.get('flags', None)
     if raw_flags is not None:
-        flag_strings, blind_cuts, region_types = [], [], []
+        flag_strings, blind_cuts, region_types, labels = [], [], [], []
         for entry in raw_flags:
             if isinstance(entry, str):
-                flag_strings.append(_with_global_cuts(entry, global_cuts))
+                flag = _with_global_cuts(entry, global_cuts)
+                label = None
+                flag_strings.append(flag)
                 blind_cuts.append(False)
                 region_types.append(None)
             elif isinstance(entry, dict):
-                flag_strings.append(_with_global_cuts(entry['cut'], global_cuts))
+                flag = _with_global_cuts(entry['cut'], global_cuts)
+                label = entry.get('label', None)
+                flag_strings.append(flag)
                 blind_cuts.append(bool(entry.get('blind', False)))
                 region_types.append(entry.get('region_type', None))
+            else:
+                continue
+            # main.py indexes labels by custom cut (entries that are not 'pass...' event flags)
+            if not flag.startswith('pass'):
+                labels.append(label)
+            elif label is not None:
+                raise ValueError(f"flags: 'label' is only supported for custom cuts, not '{flag}'")
         overrides['flags'] = flag_strings
         overrides['blind_cuts'] = blind_cuts
         overrides['region_types'] = region_types
+        if any(l is not None for l in labels):
+            overrides['labels'] = labels
 
     return {
         'signal_files': signal_files,
@@ -259,6 +275,21 @@ def load_input_config(yaml_path):
         'data_groups': data_groups,
         'overrides': overrides,
     }
+
+
+def _parse_binning_1d(raw):
+    """binning_1d: {var: [nbins, xmin, xmax]} -> {var: (int, float, float)}. 1D plots only."""
+    if not isinstance(raw, dict):
+        raise ValueError("binning_1d must map variable -> [nbins, xmin, xmax]")
+    out = {}
+    for var, spec in raw.items():
+        if not isinstance(spec, (list, tuple)) or len(spec) != 3:
+            raise ValueError(f"binning_1d.{var}: expected [nbins, xmin, xmax], got {spec!r}")
+        nbins, xmin, xmax = int(spec[0]), float(spec[1]), float(spec[2])
+        if nbins < 1 or xmin >= xmax:
+            raise ValueError(f"binning_1d.{var}: need nbins >= 1 and xmin < xmax, got {spec!r}")
+        out[var] = (nbins, xmin, xmax)
+    return out
 
 
 def apply_config_to_args(args, overrides):

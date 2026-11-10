@@ -12,7 +12,7 @@ except ImportError:
         def __exit__(self, *a): pass
         def update(self, n=1): pass
 from src.selections import SelectionManager
-from src.config import AnalysisConfig, AnalysisMode, ModeConfig
+from src.config import AnalysisConfig, AnalysisMode, ModeConfig, plane_key
 
 
 
@@ -629,6 +629,18 @@ class DataLoader:
 
         return file_path, event_result, custom_result
 
+    @staticmethod
+    def _event_scalar(data, var_key, idx):
+        """Scaled per-event value of a scalar variable, or element [0] of an RJR vector; None if absent."""
+        if var_key not in data:
+            return None
+        raw = data[var_key][idx]
+        if np.ndim(raw) > 0:
+            if len(raw) == 0:
+                return None
+            raw = raw[0]
+        return raw * AnalysisConfig.VARIABLES[var_key]['scale']
+
     def _passes_compressed_plane_cuts(self, var_key, data, idx):
         """
         Apply compressed PtISR/RISR cuts per plotted variable.
@@ -662,6 +674,8 @@ class DataLoader:
         extracted_data = {}
 
         indices = np.where(mask)[0]
+        plane_pairs = [(c['x_var'], c['y_var'])
+                       for c in ModeConfig.get(self.analysis_mode)['plot_2d_configs']]
 
         for idx in indices:
             # Mode-specific validation
@@ -688,6 +702,18 @@ class DataLoader:
 
             # Get base event weight
             base_weight = 1.0 if is_data else data['evtFillWgt'][idx] * luminosity
+
+            # 2D planes: store (x, y, weight) from the same event, without the
+            # per-variable N-1 cuts, so x and y always describe one event.
+            for x_var, y_var in plane_pairs:
+                x_val = self._event_scalar(data, x_var, idx)
+                y_val = self._event_scalar(data, y_var, idx)
+                if x_val is None or y_val is None:
+                    continue
+                key = plane_key(x_var, y_var)
+                extracted_data.setdefault(f'{key}x', []).append(x_val)
+                extracted_data.setdefault(f'{key}y', []).append(y_val)
+                extracted_data.setdefault(f'{key}w', []).append(base_weight)
 
             # Extract all configured variables
             for var_key, var_config in AnalysisConfig.VARIABLES.items():

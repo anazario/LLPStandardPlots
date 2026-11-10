@@ -5,6 +5,29 @@ try:
 except ImportError:
     _CMS_AVAILABLE = False
 
+
+def parse_energy(spec):
+    """
+    Centre-of-mass energy setting -> (energy in TeV, header label or None).
+
+    A single number (13.6 or '13.6') gives (13.6, None): the header keeps its
+    usual '<energy> TeV'. Values joined by '+' ('13+13.6', for Run 2 + Run 3)
+    give (13.0, '13 + 13.6 TeV'); the first value is used where one number is needed.
+    """
+    if isinstance(spec, (int, float)):
+        return float(spec), None
+    parts = [p.strip() for p in str(spec).split('+') if p.strip()]
+    try:
+        values = [float(p) for p in parts]
+    except ValueError:
+        values = []
+    if not values:
+        raise ValueError(f"energy: expected a number in TeV or numbers joined by '+', got {spec!r}")
+    if len(values) == 1:
+        return values[0], None
+    return values[0], " + ".join(parts) + " TeV"
+
+
 class StyleManager:
     """Manages CMS plotting style configuration."""
     

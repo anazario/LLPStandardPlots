@@ -10,7 +10,7 @@ except ImportError:
 import os
 import glob
 
-from src.style import StyleManager
+from src.style import StyleManager, parse_energy
 from src.loader import DataLoader
 from src.plotter import Plotter1D, Plotter2D, PlotterDataMC
 from src.selections import FinalStateResolver, is_blinded_selection
@@ -336,7 +336,9 @@ def parse_arguments():
     parser.add_argument('--years', default=None,
                        help='Data years setting the per-run MC luminosities: run2, run3, all, or a comma list '
                             'like 16,17,18,22 (default: the years of the data files)')
-    parser.add_argument('--energy', type=float, default=13.6, help='Centre-of-mass energy in TeV (default: 13.6)')
+    parser.add_argument('--energy', type=str, default=13.6,
+                        help="Centre-of-mass energy in TeV (default: 13.6). Join runs with '+', "
+                             "e.g. 13+13.6 for Run 2 + Run 3 -> header '(13 + 13.6 TeV)'")
     parser.add_argument('--unblind', action='store_true', help='Bypass data blinding (shows data in all regions including signal regions)')
     parser.add_argument('--data-flag', default=None,
                        help='Flag used to load data files for CR-vs-SR overlay plots '
@@ -476,13 +478,18 @@ def main():
             args.lumi = 400.0
 
     # Setup
+    try:
+        args.energy, energy_label = parse_energy(args.energy)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     if lumi_info:
         print_lumi_table(lumi_info)
         args.lumi = lumi_info['total']
         style = StyleManager(luminosity=round(lumi_info['total']), energy=args.energy,
                              energy_label=lumi_info['energy_label'])
     else:
-        style = StyleManager(luminosity=args.lumi, energy=args.energy)
+        style = StyleManager(luminosity=args.lumi, energy=args.energy, energy_label=energy_label)
     style.set_style()
 
     loader = DataLoader(args.tree, luminosity=args.lumi,
@@ -1026,7 +1033,7 @@ def main():
             'energy': args.energy,
             'lumi': args.lumi,
             'run_lumis': dict(lumi_info['run_lumis']) if lumi_info else None,
-            'energy_label': lumi_info['energy_label'] if lumi_info else None,
+            'energy_label': lumi_info['energy_label'] if lumi_info else energy_label,
         }
         meta, yield_hists = build_yields(yield_regions, bg_groups,
                                          lumi_info['file_eras'] if lumi_info else None,

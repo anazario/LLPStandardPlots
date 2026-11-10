@@ -1,5 +1,4 @@
-# Corrected MET (selCMet) in data, in the inverted-Ms CR used for the time-significance plot
-# (config/1d_timesig_crdata_vs_sig_uncompressed_v54.yaml).
+# Corrected MET (selCMet) in data, in the inverted-Ms CR (Ms < 2 TeV), no object selection.
 # Uncompressed baseline: selCMet > 150, evtFillWgt < 10, rjrPTS < 150 (so the plot starts at 150).
 #   -> 1d_met_datacr_uncompressed_v54/CustomRegion1/1D_plots/datas_met_CustomRegion1.pdf
 #
@@ -18,10 +17,9 @@ format: [pdf, root]
 output: 1d_met_datacr_uncompressed_v54
 
 flags:
-  # Same CR as the timing plot: Ms < 2 TeV, >= 1 baseline photon, SV veto
-  - cut: "(lead(rjr_Ms) < 2000) & (nBaseLinePhotons >= 1) & (SV_nHadronic == 0) & (SV_nLeptonic == 0)"
-    region_type: pho
-    label: "Region: M_{S} < 2 TeV, N_{#gamma} #geq 1, N_{SV} = 0"
+  # Inverted Ms CR only (Ms < 2 TeV, below every uncompressed SR); no object selection
+  - cut: "(lead(rjr_Ms) < 2000)"
+    label: "Region: M_{S} < 2 TeV"
 
 signal: []
 

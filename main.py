@@ -366,6 +366,8 @@ def parse_arguments():
                        help='Flag used to load data files for CR-vs-SR overlay plots '
                             '(e.g. passNPhoEq1SelectionPromptMedIsoCR). '
                             'Data is loaded with this flag independently of --flags.')
+    parser.add_argument('--data-flag-label', default=None,
+                       help='Legend/region label for the --data-flag CR (default: formatted flag name or raw cut)')
     parser.add_argument('--labels', nargs='+', default=None,
                        help='Custom labels for custom cut regions (1:1 with non-event-flag entries in --flags)')
     
@@ -671,11 +673,26 @@ def main():
         else:
             print(f"\nProcessing {item['data_source']}: {flag}")
         
-        # Check if we have data for this item
+        # Get corresponding data for this flag/cut
+        if item['data_source'] == 'event_flag':
+            current_data_data = data_data_map.get(flag, {})
+        else:
+            # For custom cuts, use the blind-aware region map to look up data
+            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
+            data_region_name = custom_cut_data_region_map.get(custom_region_idx)  # None = blinded
+            if data_region_name and custom_data_data_map:
+                current_data_data = custom_data_data_map.get(data_region_name, {})
+            else:
+                current_data_data = {}
+        
+        # Check if we have data for this item (data-only regions are kept)
         has_sig = bool(current_sig_data)
         has_bg = bool(current_bg_data)
-        
-        if not has_sig and not has_bg:
+        # Blinded data never keeps a region alive (it would only produce an empty folder)
+        has_data = (not item['blind_data'] and bool(current_data_data)
+                    and bool(loader.combine_data(current_data_data)))
+
+        if not has_sig and not has_bg and not has_data:
             print(f"  Skipping {flag} (No events found)")
             continue
             
@@ -697,18 +714,6 @@ def main():
         # Data is already assigned above
         current_bg_combined = loader.combine_data(current_bg_data)
 
-        # Get corresponding data for this flag/cut
-        if item['data_source'] == 'event_flag':
-            current_data_data = data_data_map.get(flag, {})
-        else:
-            # For custom cuts, use the blind-aware region map to look up data
-            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
-            data_region_name = custom_cut_data_region_map.get(custom_region_idx)  # None = blinded
-            if data_region_name and custom_data_data_map:
-                current_data_data = custom_data_data_map.get(data_region_name, {})
-            else:
-                current_data_data = {}
-        
         # Retrieve CR data collection for --data-flag (shared by 2D and cr_sig blocks)
         cr_data_collection = {}
         if all_data_files and args.data_flag:
@@ -916,8 +921,9 @@ def main():
                         f"data_2d_{flag}_{suffix}"
                     ))
                 if cr_data_collection and args.data_flag != flag:
-                    cr_region_label = (resolver.format_sv_label(args.data_flag)
-                                       if data_flag_is_event else f"Region: {args.data_flag}")
+                    cr_region_label = args.data_flag_label or (
+                        resolver.format_sv_label(args.data_flag)
+                        if data_flag_is_event else f"Region: {args.data_flag}")
                     data_2d_cases.append((
                         cr_data_collection, cr_region_label,
                         f"data_2d_{args.data_flag}_{suffix}"
@@ -996,7 +1002,8 @@ def main():
                 print(f"  Generating CR Data vs SR Signal Plots (data flag: {args.data_flag})...")
                 cr_sig_subdir = f"{folder_name}/cr_vs_sr_plots"
                 # Use formatted label for named flags, raw cut string for custom cuts
-                cr_label = resolver.format_sv_label(args.data_flag) if data_flag_is_event else args.data_flag
+                cr_label = args.data_flag_label or (
+                    resolver.format_sv_label(args.data_flag) if data_flag_is_event else args.data_flag)
 
                 if use_root_file:
                     cr_sig_dir = fs_dir.mkdir("cr_vs_sr_plots")

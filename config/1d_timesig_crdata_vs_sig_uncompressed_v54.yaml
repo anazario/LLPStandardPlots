@@ -1,0 +1,48 @@
+# Photon time significance: data CR (Ms < 2 TeV) vs the full v38 SMS signal sample,
+# both after the uncompressed baseline (selCMet > 150, evtFillWgt < 10, rjrPTS < 150).
+# The CR has no cut on anything that affects photon timing directly.
+#   -> 1d_timesig_crdata_vs_sig_uncompressed_v54/CustomRegion1/cr_vs_sr_plots/cr_vs_sr_photon_wtimesig_*.pdf
+# Both curves are unit-normalized (cr_sig plots always are).
+#
+# Run on cmslpc:  python main.py --input-config config/1d_timesig_crdata_vs_sig_uncompressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51
+energy: 13+13.6
+analysis_type: uncompressed
+plots: [cr_sig]
+vars: [baseLinePhoton_WTimeSig]
+binning_1d:           # config.py default is (-2.5, 2.5), which hides the delayed tail
+  baseLinePhoton_WTimeSig: [60, -10, 20]
+format: [pdf, root]
+output: 1d_timesig_crdata_vs_sig_uncompressed_v54
+
+# Data CR: inverted Ms (Ms < 2 TeV), >= 1 baseline photon so there is a time to plot, SV veto.
+data_flag: "(lead(rjr_Ms) < 2000) & (nBaseLinePhotons >= 1) & (SV_nHadronic == 0) & (SV_nLeptonic == 0)"
+data_flag_label: "Data, M_{S} < 2 TeV"
+
+# Signal: everything after the baseline with >= 1 photon (so the event has a time) and the SV veto.
+# blind: true so data is never loaded for this inclusive selection.
+flags:
+  - cut: "(nBaseLinePhotons >= 1) & (SV_nHadronic == 0) & (SV_nLeptonic == 0)"
+    region_type: pho
+    blind: true
+    label: "Baseline, N_{#gamma} #geq 1, N_{SV} = 0"
+
+# v38 signal MC. Relative paths resolve against base_dir; use an absolute path
+# if it lives in a different directory than the data.
+signal:
+  - gogoGZ_mGl-2300_mN2-1600_mN1-500_ct0p5__SVHPM100_FullMini_v38__rjrskim.root
+
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

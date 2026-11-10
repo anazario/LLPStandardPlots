@@ -1,0 +1,38 @@
+# Corrected MET (selCMet) in data, in the inverted-Ms CR used for the time-significance plot
+# (config/1d_timesig_crdata_vs_sig_uncompressed_v54.yaml).
+# Uncompressed baseline: selCMet > 150, evtFillWgt < 10, rjrPTS < 150 (so the plot starts at 150).
+#   -> 1d_met_datacr_uncompressed_v54/CustomRegion1/1D_plots/datas_met_CustomRegion1.pdf
+#
+# Run on cmslpc:  python main.py --input-config config/1d_met_datacr_uncompressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51
+energy: 13+13.6
+analysis_type: uncompressed
+plots: [1d]
+vars: [selCMet]
+binning_1d:
+  selCMet: [34, 150, 1000]   # 25 GeV bins above the 150 GeV baseline
+format: [pdf, root]
+output: 1d_met_datacr_uncompressed_v54
+
+flags:
+  # Same CR as the timing plot: Ms < 2 TeV, >= 1 baseline photon, SV veto
+  - cut: "(lead(rjr_Ms) < 2000) & (nBaseLinePhotons >= 1) & (SV_nHadronic == 0) & (SV_nLeptonic == 0)"
+    region_type: pho
+    label: "Region: M_{S} < 2 TeV, N_{#gamma} #geq 1, N_{SV} = 0"
+
+signal: []
+
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

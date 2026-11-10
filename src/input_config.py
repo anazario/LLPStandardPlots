@@ -222,7 +222,7 @@ def load_input_config(yaml_path):
 
     override_keys = (
         'lumi', 'years', 'energy', 'plots', 'vars', 'output', 'tree', 'analysis_type',
-        'isr_pt_cut', 'normalize', 'yields', 'sf_fit'
+        'isr_pt_cut', 'normalize', 'yields', 'sf_fit', 'data_flag', 'data_flag_label'
     )
     overrides = {k: cfg[k] for k in override_keys if k in cfg}
     if cfg.get('binning_1d'):

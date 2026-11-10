@@ -2,6 +2,7 @@
 # Slide 5 of the EXO LLP talk (June 19 2026), updated to full Run 2 + Run 3 (2016-2026).
 #   CustomRegion1 -> datas_isr_risr_CustomRegion1.pdf   (top panel: data, SV-only anchor CR)
 #   CustomRegion2 -> signals_isr_risr_CustomRegion2.pdf (bottom panel: signals, SV-only SR)
+#   CustomRegion4/5 -> *_isr_ptisr_CustomRegion{4,5}.pdf: PtISR N-1 versions of 1/2
 # Data in CustomRegion2 is blinded automatically (HighDxySigSR flag).
 #
 # Run on cmslpc:  python main.py --input-config config/1d_risr_svonly_compressed_v54.yaml --workers 8
@@ -13,7 +14,7 @@ energy: 13+13.6
 analysis_type: compressed
 isr_pt_cut: 500       # kinSV floor (main.py default is 700)
 plots: [1d, 2d]     # one data pass makes both
-vars: [rjrIsr_RIsr]
+vars: [rjrIsr_RIsr, rjrIsr_PtIsr]
 binning_1d:           # 1D only (the 2D plots keep the full 0-1 range): as on the June slide
   rjrIsr_RIsr: [30, 0.4, 1.0]
 normalize: true
@@ -32,6 +33,13 @@ flags:
   - cut: "(rjrIsr_nSVisObjects > 0) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (nBaseLinePhotons == 0)"
     region_type: sv
     label: "Region: SV^{CR,L}"
+  # PtISR N-1: CustomRegion1/2 without the PtISR cut (the loader still applies
+  # RISR >= 0.4 to the PtISR plot and PtISR >= isr_pt_cut to the RISR plot).
+  # Appended so CustomRegion1-3 keep their numbering.
+  - cut: "(rjrIsr_nSVisObjects > 0) & (rjrIsr_RIsr >= 0.4) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (nBaseLinePhotons == 0)"
+    region_type: sv
+  - cut: "(rjrIsr_nSVisObjects > 0) & (rjrIsr_RIsr >= 0.4) & (lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (nBaseLinePhotons == 0)"
+    region_type: sv
 
 # v38 signal MC. Relative paths resolve against base_dir; use absolute paths
 # if these live in a different directory than the data.

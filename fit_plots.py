@@ -25,6 +25,9 @@ Usage examples:
       --fit-config FitConfig.yaml --output plots/sigcmp --lumi 259.3 \\
       --signal FullSim=runs/FullSim/results/fitdiag/.../gogoGZ_..._fitDiagnosticsTest.root \\
       --signal "FastSim corr.=runs/FastCorr/results/fitdiag/.../gogoGZ_..._fitDiagnosticsTest.root"
+
+  # Combined Run 2 + Run 3 fit -> header reads "(13 + 13.6 TeV)":
+  python fit_plots.py --fit-result ... --fit-config ... --lumi 259.3 --energy 13+13.6
 """
 
 import argparse
@@ -46,8 +49,9 @@ def parse_args():
                    help="Output format (default: pdf)")
     p.add_argument("--lumi",   type=float, default=136.0,
                    help="Integrated luminosity in fb^-1 (default: 136)")
-    p.add_argument("--energy", type=float, default=13.0,
-                   help="Centre-of-mass energy in TeV (default: 13)")
+    p.add_argument("--energy", default="13",
+                   help="Centre-of-mass energy in TeV (default: 13). Combine runs with '+', "
+                        "e.g. --energy 13+13.6 for Run 2 + Run 3 -> '(13 + 13.6 TeV)'")
     p.add_argument("--mode", choices=["compressed", "uncompressed"], default=None,
                    help="Override auto-detected fit mode")
     p.add_argument("--label-scheme", choices=["auto", "legacy", "compressed-final", "noncompressed-final"],
@@ -68,6 +72,16 @@ def parse_args():
             p.error(f"--signal expects LABEL=FILE, got {spec!r}")
         signals.append((label, path))
     args.signal = signals
+
+    energies = [e.strip() for e in args.energy.split("+") if e.strip()]
+    try:
+        [float(e) for e in energies]
+    except ValueError:
+        p.error(f"--energy expects numbers in TeV joined by '+', got {args.energy!r}")
+    if not energies:
+        p.error("--energy must not be empty")
+    args.energy_label = " + ".join(energies) + " TeV"
+    args.energy = float(energies[0])
     return args
 
 
@@ -79,7 +93,8 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    plotter = FitPlotter(luminosity=args.lumi, energy=args.energy)
+    plotter = FitPlotter(luminosity=args.lumi, energy=args.energy,
+                         energy_label=args.energy_label)
     plotter.plot_all(
         fit_result_path=args.fit_result,
         fit_config_path=args.fit_config,

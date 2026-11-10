@@ -306,8 +306,8 @@ class FitPlotter:
         {prefix}_combined_{pre,post}fit.{fmt}
     """
 
-    def __init__(self, luminosity=136, energy=13):
-        self.style = StyleManager(luminosity=luminosity, energy=energy)
+    def __init__(self, luminosity=136, energy=13, energy_label=None):
+        self.style = StyleManager(luminosity=luminosity, energy=energy, energy_label=energy_label)
         self.style.set_style()
         self.datamc_plotter = PlotterDataMC(self.style)
         self.luminosity = luminosity

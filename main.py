@@ -182,6 +182,27 @@ def _write_palette_setup(f_out):
     macro.Write()
 
 
+def name_palettes(pad):
+    """
+    Name every unnamed TPaletteAxis in a pad (recursively) 'palette'.
+
+    ROOT >= 6.26 writes the 2D colour palette without a name; ROOT <= 6.24 only
+    recognises it by the name 'palette'. Opened in 6.24, an unnamed palette is
+    painted with no histogram attached and crashes ROOT (black canvas, segfault
+    in THistPainter::PaintFunction). Returns the number of palettes renamed.
+    """
+    renamed = 0
+    for prim in pad.GetListOfPrimitives():
+        if prim.InheritsFrom("TPad"):
+            renamed += name_palettes(prim)
+        elif prim.InheritsFrom("TH1"):
+            for func in prim.GetListOfFunctions():
+                if func.InheritsFrom("TPaletteAxis") and not func.GetName():
+                    func.SetName("palette")
+                    renamed += 1
+    return renamed
+
+
 def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path="", canvas_name=None, save_hists=False):
     """
     Save canvas in the specified format.
@@ -195,6 +216,7 @@ def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path=
 
     if output_format == 'root':
         if f_out is not None:
+            name_palettes(canvas)
             canvas.Write()
             if save_hists:
                 _write_hists_from_pad(canvas)

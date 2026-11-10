@@ -7,7 +7,7 @@
 base_dir: /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v54   # check path (same as the data config)
 
 lumi: 449.51
-energy: 13.6
+energy: 13+13.6       # Run 2 + Run 3 -> header (13 + 13.6 TeV)
 analysis_type: compressed
 plots: [2d]
 format: pdf

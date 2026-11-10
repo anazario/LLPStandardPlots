@@ -638,7 +638,8 @@ class Plotter2D(PlotterBase):
         self.style.draw_cms_labels(prelim_str=cms_label)
         self.style.draw_process_label(sample_label, x_pos=sample_label_x_pos, y_pos=0.87)
         if final_state_label:
-            x_pos, y_pos = self._region_label_slot_2d(canvas, cms_label, final_state_label)
+            x_pos, y_pos = self._region_label_slot_2d(canvas, cms_label, final_state_label,
+                                                      sample_label_x_pos)
             self._draw_region_label(canvas, final_state_label, x_pos=x_pos, y_pos=y_pos, plot_type="2d")
 
         canvas.Update() # Update after adding labels
@@ -653,9 +654,10 @@ class Plotter2D(PlotterBase):
         canvas.cd()
         return latex.GetXsize() / (canvas.GetX2() - canvas.GetX1())
 
-    def _region_label_slot_2d(self, canvas, prelim_str, label):
+    def _region_label_slot_2d(self, canvas, prelim_str, label, sample_label_x_pos):
         """Put the region label on the header line, between 'CMS <Preliminary>' and the
-        luminosity, when it fits there; otherwise inside the frame, top left."""
+        luminosity, when it fits there; otherwise under the sample label (top right of the
+        frame, where the populated low-pT corner of the plane is out of the way)."""
         st = self.style
         gap = 0.015
         prelim_end = st.prelim_x_pos + self._ndc_text_width(canvas, prelim_str, 52, st.prelim_text_size)
@@ -667,7 +669,7 @@ class Plotter2D(PlotterBase):
             # centre it in the free space
             free = (lumi_start - gap) - (prelim_end + gap)
             return prelim_end + gap + (free - width) / 2, st.cms_y_pos
-        return canvas.GetLeftMargin() + 0.03, 0.87
+        return sample_label_x_pos, 0.81
 
 class PlotterDataMC(PlotterBase):
     def __init__(self, style_manager):

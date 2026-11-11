@@ -62,9 +62,91 @@ from src.unrolled import UnrolledBinning
 
 ROOT.gROOT.ForceStyle(False)
 
+# Region label of 1D plots: inside the top-right corner of the frame, right-aligned
+FRAME_LABEL_PAD = 0.015   # NDC gap between the frame edges and the label
+LEGEND_LABEL_GAP = 0.01   # minimum NDC gap kept between the label and a legend below it
+
+
+def region_label_text_for_size(label):
+    """The text StyleManager.draw_region_label lays out (TMathText symbols are drawn
+    over two-space placeholders), so the measured width matches what is drawn."""
+    if label.startswith("Region:"):
+        return label.replace("\\ell\\ell", "  ").replace("hh", "  ")
+    return label
+
+
+def ndc_text_box(pad, text, font, size):
+    """(width, height) of a TLatex string in NDC units of this pad."""
+    import ctypes
+    latex = ROOT.TLatex(0, 0, text)
+    latex.SetNDC()
+    latex.SetTextFont(font)
+    latex.SetTextSize(size)
+    pad.cd()
+    w, h = ctypes.c_uint(0), ctypes.c_uint(0)
+    latex.GetBoundingBox(w, h)
+    return (w.value / (pad.GetWw() * pad.GetAbsWNDC()),
+            h.value / (pad.GetWh() * pad.GetAbsHNDC()))
+
+
+def frame_label_box(pad, width, height):
+    """(x1, y1, x2, y2) NDC box of a label of this size, right-aligned in the top of the frame."""
+    x2 = 1 - pad.GetRightMargin() - FRAME_LABEL_PAD
+    y2 = 1 - pad.GetTopMargin() - FRAME_LABEL_PAD
+    return x2 - width, y2 - height, x2, y2
+
+
+def legend_right_edge(pad, leg):
+    """NDC right edge of what the legend actually draws: its box, or further right when
+    entry labels are wider than the box (long signal names spill out of a 0.3-wide box)."""
+    lx1, lx2 = leg.GetX1NDC(), leg.GetX2NDC()
+    size = leg.GetTextSize()
+    if size <= 0:          # auto-sized text always fits the box
+        return lx2
+    widest = 0.0
+    for entry in leg.GetListOfPrimitives():
+        label = entry.GetLabel() if hasattr(entry, 'GetLabel') else ''
+        if label:
+            widest = max(widest, ndc_text_box(pad, label, leg.GetTextFont(), size)[0])
+    return max(lx2, lx1 + leg.GetMargin() * (lx2 - lx1) + widest)
+
+
+def push_legends_below(legends, box, pad=None, gap=LEGEND_LABEL_GAP):
+    """Move every legend that overlaps the box horizontally (its drawn text included,
+    when pad is given) down until its top is `gap` below the box. Returns the number moved."""
+    x1, y1, x2, _ = box
+    moved = 0
+    for leg in legends:
+        if leg is None:
+            continue
+        lx1, ly1, ly2 = leg.GetX1NDC(), leg.GetY1NDC(), leg.GetY2NDC()
+        lx2 = legend_right_edge(pad, leg) if pad is not None else leg.GetX2NDC()
+        if lx1 < x2 and lx2 > x1 and ly2 > y1 - gap:
+            dy = ly2 - (y1 - gap)
+            leg.SetY1NDC(ly1 - dy)
+            leg.SetY2NDC(ly2 - dy)
+            moved += 1
+    return moved
+
+
 class PlotterBase:
     def __init__(self, style_manager):
         self.style = style_manager
+
+    def _draw_region_label_in_frame(self, canvas, label, legends=(), textsize=None, plot_type="1d"):
+        """Region label in the top-right corner of the frame (right-aligned), with any
+        overlapping legend moved down below it. Keeps it off the CMS/lumi header line."""
+        if not label:
+            return None
+        textsize = textsize if textsize is not None else self.style.sample_label_size
+        canvas.Update()
+        width, height = ndc_text_box(canvas, region_label_text_for_size(label), 42, textsize)
+        box = frame_label_box(canvas, width, height)
+        push_legends_below(legends, box, pad=canvas)
+        latex_objects = self._draw_region_label(canvas, label, x_pos=box[0], y_pos=box[1],
+                                                textsize=textsize, plot_type=plot_type)
+        canvas.Modified()
+        return latex_objects
 
     def _draw_region_label(self, canvas, label, x_pos=0.48, y_pos=None, textsize=None, plot_type="default"):
         """Helper to draw the region/final state label."""
@@ -228,8 +310,8 @@ class Plotter1D(PlotterBase):
                                    prelim_str="Preliminary" if is_data_type else "Simulation",
                                    prelim_x=0.248, lumi_x=0.9, cms_text_size_mult=1.)
 
-        # Draw Region Label
-        self._draw_region_label(canvas, final_state_label, plot_type="1d")
+        # Region label: top right inside the frame, legend moved below it if needed
+        self._draw_region_label_in_frame(canvas, final_state_label, legends=[legend])
 
         canvas.Update() # Ensure all drawing is updated
 
@@ -306,8 +388,8 @@ class Plotter1D(PlotterBase):
         # Use common CMS label drawing, optimized for 1D
         self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos, prelim_x=0.248, lumi_x=0.9, cms_text_size_mult=1.)
         
-        # Draw Region Label
-        self._draw_region_label(canvas, final_state_label, plot_type="1d")
+        # Region label: top right inside the frame, legend moved below it if needed
+        self._draw_region_label_in_frame(canvas, final_state_label, legends=[legend])
 
         canvas.Update() # Ensure all drawing is updated
 
@@ -385,7 +467,7 @@ class Plotter1D(PlotterBase):
         self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos,
                                    prelim_str="Preliminary", prelim_x=0.248,
                                    lumi_x=0.9, cms_text_size_mult=1.)
-        self._draw_region_label(canvas, final_state_label, plot_type="1d")
+        self._draw_region_label_in_frame(canvas, final_state_label, legends=[legend])
         canvas.Update()
 
         canvas.sig_hists = sig_hists
@@ -535,7 +617,7 @@ class Plotter1D(PlotterBase):
         self.style.draw_cms_labels(cms_x=0.16, cms_y=self.style.cms_y_pos,
                                    prelim_str="Preliminary", prelim_x=0.248,
                                    lumi_x=0.9, cms_text_size_mult=1.)
-        self._draw_region_label(canvas, final_state_label, plot_type="1d")
+        self._draw_region_label_in_frame(canvas, final_state_label, legends=[legend])
         canvas.Update()
 
         canvas._hists = all_hists

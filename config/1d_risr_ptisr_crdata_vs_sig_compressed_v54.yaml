@@ -1,0 +1,100 @@
+
+# 1D RISR and PtISR, data CR vs signal-MC SR in the same plot, for each of the 5 object
+# channels of LLPCombineJustin/config_master/LittleGuy_Compressed_FullRegions_AnalysisConfig.yaml.
+# Full kinematic range per channel: the channel's kin* cuts, no RISR bin (all RISR >= 0.4).
+#   -> 1d_risr_ptisr_crdata_vs_sig_compressed_v54/<name>/cr_vs_sr_plots/cr_vs_sr_isr_{risr,ptisr}_<name>.pdf
+#   <name> = MixDel | SVonly | MixPrompt | DelPho | Eq2Pho (the flags' 'name:'; default CustomRegionN)
+#
+# Each flag carries its own data CR ('cr') and PtISR threshold ('isr_pt_cut'). The loader's
+# N-1 logic then plots PtISR with only RISR >= 0.4 and RISR with only PtISR >= isr_pt_cut,
+# so the kin* PtISR/RISR cuts are not written in the cut strings. nSVisObjects > 0, MET,
+# triggers, MET filters and the HEM veto come from main.py's compressed baseline; rjrPTS < 200
+# (the rest of Cleaning) is in every cut. Both curves are unit-normalized.
+#
+# Run on cmslpc:  python main.py --input-config config/1d_risr_ptisr_crdata_vs_sig_compressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51          # plots are unit-normalized; this only sets the header
+energy: 13+13.6
+analysis_type: compressed
+isr_pt_cut: 300       # global fallback only; every flag below sets its own
+plots: [cr_sig]
+vars: [rjrIsr_RIsr, rjrIsr_PtIsr]
+binning_1d:
+  rjrIsr_RIsr: [30, 0.4, 1.0]
+format: [pdf, root]
+output: 1d_risr_ptisr_crdata_vs_sig_compressed_v54
+
+flags:
+  # -- Ch MixDel: >= 1 SV + late notBH tight-iso photon (kinMixDel: PtISR > 300) --
+  - cut: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    cr: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    cr_label: "Data, SV^{CR} + #gamma^{late}"
+    isr_pt_cut: 300
+    region_type: sv
+    blind: true
+    label: "SR: SV + #gamma^{late}"
+    name: MixDel
+
+  # -- Ch SVonly: >= 1 SV + 0 photons (kinSV: PtISR > 500) --
+  - cut: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (nBaseLinePhotons == 0) & (passNPhoGe1SelectionEarlyBeamHaloCR == 0) & (passNPhoGe1SelectionLateBeamHaloCR == 0) & (passNPhoGe1SelectionEarlyNotBHCR == 0) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 0)"
+    cr: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (nBaseLinePhotons == 0) & (passNPhoGe1SelectionEarlyBeamHaloCR == 0) & (passNPhoGe1SelectionLateBeamHaloCR == 0) & (passNPhoGe1SelectionEarlyNotBHCR == 0) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 0)"
+    cr_label: "Data, SV^{CR} + 0#gamma"
+    isr_pt_cut: 500
+    region_type: sv
+    blind: true
+    label: "SR: SV + 0#gamma"
+    name: SVonly
+
+  # -- Ch MixPrompt: >= 1 SV + >= 1 prompt (non-BH, non-delayed) photon (kinMixPrompt: PtISR > 500) --
+  - cut: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionHighDxySigSR == 1) & (nBaseLinePhotons >= 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0)"
+    cr: "(lead(rjrPTS) < 200) & (passNSVGe1SelectionLowDxySigCR == 1) & (nBaseLinePhotons >= 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0)"
+    cr_label: "Data, SV^{CR} + #gamma^{prompt}"
+    isr_pt_cut: 500
+    region_type: sv
+    blind: true
+    label: "SR: SV + #gamma^{prompt}"
+    name: MixPrompt
+
+  # -- Ch DelPho: 0 SV + delayed photon (kinDelPho: PtISR > 850) --
+  # CR choice: early notBH (timing mirror of the late notBH tight-iso SR). Alternatives in the
+  # master config: passNPhoGe1Selection{Early,Late}BeamHaloCR, {Early,Late}MedIsoCR, EarlyTightIsoCR.
+  - cut: "(lead(rjrPTS) < 200) & (passNSVEq0Selection == 1) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 1)"
+    cr: "(lead(rjrPTS) < 200) & (passNSVEq0Selection == 1) & (passNPhoGe1SelectionEarlyNotBHCR == 1)"
+    cr_label: "Data, 0 SV + #gamma^{early}_{notBH}"
+    isr_pt_cut: 850
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + #gamma^{late}_{notBH}"
+    name: DelPho
+
+  # -- Ch Eq2Pho: 0 SV + exactly 2 prompt photons (kinEq2Pho: PtISR > 900) --
+  - cut: "(lead(rjrPTS) < 200) & (passNSVEq0Selection == 1) & (nBaseLinePhotons == 2) & (passNPhoEq2SelectionCompPromptTightIsoSR == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0)"
+    cr: "(lead(rjrPTS) < 200) & (passNSVEq0Selection == 1) & (nBaseLinePhotons == 2) & (passNPhoEq2SelectionCompPromptMedIsoCR == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0)"
+    cr_label: "Data, 0 SV + 2#gamma^{med iso}"
+    isr_pt_cut: 900
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 2#gamma^{tight iso}"
+    name: Eq2Pho
+
+# v38 signal MC (same points as 1d_risr_svonly_compressed_v54.yaml). Relative paths resolve
+# against base_dir; use absolute paths if these live in a different directory than the data.
+signal:
+  - gogoGZ_mGl-2300_mN2-2250_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-2200_mN1-2100_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-2200_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+
+# Full Run 2 + Run 3, 2016-2026 (449.51 fb^-1)
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

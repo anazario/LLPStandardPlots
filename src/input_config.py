@@ -65,6 +65,7 @@ get the total. Setting `lumi` instead keeps one global luminosity for every file
 
 import glob as _glob
 import os as _os
+import re as _re
 
 try:
     import yaml
@@ -173,6 +174,31 @@ def _is_event_flag(flag_string):
     return isinstance(flag_string, str) and flag_string.startswith('pass')
 
 
+_REGION_NAME_RE = _re.compile(r'[A-Za-z0-9_.+-]+')
+
+
+def region_display_names(flags, region_names=None):
+    """Output name of every flag: event flags keep their name, custom cuts get their
+    'name' or the default CustomRegionN (N counts custom cuts only, as in the loader)."""
+    region_names = region_names or [None] * len(flags)
+    out, k = [], 0
+    for flag, name in zip(flags, region_names):
+        if _is_event_flag(flag):
+            out.append(flag)
+        else:
+            k += 1
+            out.append(name if name is not None else f"CustomRegion{k}")
+    return out
+
+
+def _check_region_names(flags, region_names):
+    names = region_display_names(flags, region_names)
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(f"flags: region names must be unique; repeated: {', '.join(dupes)} "
+                         f"(a 'name' may not reuse another region's default CustomRegionN)")
+
+
 def _with_global_cuts(cut_string, global_cuts):
     if not global_cuts or _is_event_flag(cut_string):
         return cut_string
@@ -238,10 +264,18 @@ def load_input_config(yaml_path):
         overrides['format'] = [raw_fmt] if isinstance(raw_fmt, str) else list(raw_fmt)
 
     # Parse flags — each entry may be a plain string or
-    # {cut: "...", blind: true, region_type: "sv"|"pho", label: "Region: ..."}
+    # {cut: "...", blind: true, region_type: "sv"|"pho", label: "Region: ...",
+    #  cr: "...", cr_label: "...", isr_pt_cut: 500}
+    #   cr / cr_label: per-flag data CR for the cr_sig plots (and the 2D data CR plot);
+    #                  overrides the global data_flag / data_flag_label for this flag.
+    #   isr_pt_cut:    per-flag PtISR N-1 threshold (compressed mode, custom cuts only);
+    #                  also applied to this flag's cr. Overrides the global isr_pt_cut.
+    #   name:          region name (custom cuts only) used for the output folder, canvas
+    #                  suffixes, yields file and sf_fit channels; default CustomRegionN.
     raw_flags = cfg.get('flags', None)
     if raw_flags is not None:
         flag_strings, blind_cuts, region_types, labels = [], [], [], []
+        flag_crs, flag_cr_labels, flag_isr_pt_cuts, region_names = [], [], [], []
         for entry in raw_flags:
             if isinstance(entry, str):
                 flag = _with_global_cuts(entry, global_cuts)
@@ -249,12 +283,39 @@ def load_input_config(yaml_path):
                 flag_strings.append(flag)
                 blind_cuts.append(False)
                 region_types.append(None)
+                flag_crs.append(None)
+                flag_cr_labels.append(None)
+                flag_isr_pt_cuts.append(None)
+                region_names.append(None)
             elif isinstance(entry, dict):
                 flag = _with_global_cuts(entry['cut'], global_cuts)
                 label = entry.get('label', None)
                 flag_strings.append(flag)
                 blind_cuts.append(bool(entry.get('blind', False)))
                 region_types.append(entry.get('region_type', None))
+                cr = entry.get('cr', None)
+                cr_label = entry.get('cr_label', None)
+                pt_cut = entry.get('isr_pt_cut', None)
+                if cr_label is not None and cr is None:
+                    raise ValueError(f"flags: 'cr_label' needs a 'cr' (flag '{flag}')")
+                if pt_cut is not None:
+                    if flag.startswith('pass') or (cr is not None and _is_event_flag(cr)):
+                        raise ValueError(f"flags: 'isr_pt_cut' is only supported when 'cut' "
+                                         f"and 'cr' are custom cuts, not event flags (flag '{flag}')")
+                    pt_cut = float(pt_cut)
+                # The CR gets the same global_cuts as the flag it is paired with
+                flag_crs.append(_with_global_cuts(cr, global_cuts) if cr is not None else None)
+                flag_cr_labels.append(cr_label)
+                flag_isr_pt_cuts.append(pt_cut)
+                name = entry.get('name', None)
+                if name is not None:
+                    if flag.startswith('pass'):
+                        raise ValueError(f"flags: 'name' is only supported for custom cuts, not '{flag}'")
+                    name = str(name)
+                    if not _REGION_NAME_RE.fullmatch(name):
+                        raise ValueError(f"flags: region name '{name}' may only contain letters, "
+                                         f"digits and _ . + - (it is used in folder and file names)")
+                region_names.append(name)
             else:
                 continue
             # main.py indexes labels by custom cut (entries that are not 'pass...' event flags)
@@ -267,6 +328,15 @@ def load_input_config(yaml_path):
         overrides['region_types'] = region_types
         if any(l is not None for l in labels):
             overrides['labels'] = labels
+        # Only emitted when used, so configs without them produce identical overrides
+        if any(c is not None for c in flag_crs):
+            overrides['flag_crs'] = flag_crs
+            overrides['flag_cr_labels'] = flag_cr_labels
+        if any(c is not None for c in flag_isr_pt_cuts):
+            overrides['flag_isr_pt_cuts'] = flag_isr_pt_cuts
+        if any(n is not None for n in region_names):
+            _check_region_names(flag_strings, region_names)
+            overrides['region_names'] = region_names
 
     return {
         'signal_files': signal_files,

@@ -132,16 +132,36 @@ class DataLoader:
             print(f"    • Event flags: {', '.join(sorted(self.loading_summary['event_flags']))}")
         if self.loading_summary['custom_cuts']:
             print(f"    • Custom cuts: {', '.join(sorted(self.loading_summary['custom_cuts']))}")
+        for cut, pt_cut in self.loading_summary.get('custom_isr_pt_cuts', []):
+            print(f"    • PtISR N-1 cut >= {pt_cut:.0f} (per-region override) for: {cut}")
         print("=" * 60)
 
-    def load_data_unified(self, file_paths, event_flags, custom_cuts, is_data=False):
+    def load_data_unified(self, file_paths, event_flags, custom_cuts, is_data=False,
+                          custom_isr_pt_cuts=None):
         """
         Unified loader that handles both event flags and custom cuts in one pass.
         Args:
             is_data: If True, treat as data files (no MC scaling)
+            custom_isr_pt_cuts: optional list parallel to custom_cuts with a per-region
+                PtISR N-1 threshold (compressed mode); None entries use self.isr_pt_cut.
         Returns: (event_flag_data, custom_cut_data)
         Uses self.n_workers > 1 for file-level parallelism via ProcessPoolExecutor.
         """
+        if custom_isr_pt_cuts is not None:
+            if len(custom_isr_pt_cuts) != len(custom_cuts):
+                raise ValueError(f"custom_isr_pt_cuts has {len(custom_isr_pt_cuts)} entries "
+                                 f"for {len(custom_cuts)} custom cuts")
+            if all(c is None for c in custom_isr_pt_cuts):
+                custom_isr_pt_cuts = None
+            else:
+                # (cut, threshold) pairs: one cut may be used with several thresholds
+                seen = self.loading_summary.setdefault('custom_isr_pt_cuts', [])
+                for pair in zip(custom_cuts, custom_isr_pt_cuts):
+                    if pair[1] is not None and pair not in seen:
+                        seen.append(pair)
+        # Only passed when used, so subclasses overriding _load_one_file /
+        # _extract_values with the older signatures keep working
+        pt_kw = {'custom_isr_pt_cuts': custom_isr_pt_cuts} if custom_isr_pt_cuts else {}
         self._track_loading(event_flags=event_flags, custom_cuts=custom_cuts, is_data=is_data, file_count=len(file_paths))
         branches = self._get_branches_for_mode()
         branches.extend(self._branches_for_custom_cuts(custom_cuts))
@@ -168,7 +188,8 @@ class DataLoader:
                 print(f"  Parallel loading: {len(file_paths)} files across {self.n_workers} workers")
             with ProcessPoolExecutor(max_workers=self.n_workers) as pool:
                 futures = {
-                    pool.submit(self._load_one_file, fp, branches, event_flags, custom_cuts, is_data): fp
+                    pool.submit(self._load_one_file, fp, branches, event_flags, custom_cuts, is_data,
+                                **pt_kw): fp
                     for fp in file_paths
                 }
                 with tqdm(total=len(file_paths), unit="file", desc="Loading") as pbar:
@@ -188,7 +209,7 @@ class DataLoader:
 
             for fp in tqdm(file_paths, unit="file", desc="Loading"):
                 file_path, file_event, file_custom = self._load_one_file(
-                    fp, branches, event_flags, custom_cuts, is_data)
+                    fp, branches, event_flags, custom_cuts, is_data, **pt_kw)
                 _merge_result(file_path, file_event, file_custom)
                 _trim_heap()
 
@@ -404,7 +425,8 @@ class DataLoader:
             pass
         return 0
 
-    def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data):
+    def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data,
+                       custom_isr_pt_cuts=None):
         """Load and process a single file in chunks to bound memory usage."""
         CHUNK_SIZE = 100_000
 
@@ -564,10 +586,12 @@ class DataLoader:
                         custom_pass[i] += n_pass
                         if n_pass == 0:
                             continue
+                        pt_kw = ({'isr_pt_cut': custom_isr_pt_cuts[i]}
+                                 if custom_isr_pt_cuts and custom_isr_pt_cuts[i] is not None else {})
                         extracted_vars = self._extract_values(
                             chunk, combined_mask, is_data,
                             selected_object_masks=selected_object_masks,
-                            luminosity=file_lumi)
+                            luminosity=file_lumi, **pt_kw)
                         if extracted_vars:
                             n_stored = max((len(v) for v in extracted_vars.values()), default=0)
                             custom_stored_events[i] += n_stored
@@ -641,13 +665,16 @@ class DataLoader:
             raw = raw[0]
         return raw * AnalysisConfig.VARIABLES[var_key]['scale']
 
-    def _passes_compressed_plane_cuts(self, var_key, data, idx):
+    def _passes_compressed_plane_cuts(self, var_key, data, idx, isr_pt_cut=None):
         """
         Apply compressed PtISR/RISR cuts per plotted variable.
 
         PtISR is plotted with the RISR cut only, RISR is plotted with the PtISR
         cut only, and all other variables get both plane cuts.
+        isr_pt_cut overrides self.isr_pt_cut for this region (None = use self.isr_pt_cut).
         """
+        if isr_pt_cut is None:
+            isr_pt_cut = self.isr_pt_cut
         if self.analysis_mode != AnalysisMode.COMPRESSED:
             return True
 
@@ -655,8 +682,8 @@ class DataLoader:
             return False
 
         passes_pt = (
-            self.isr_pt_cut is None or
-            data['rjrIsr_PtIsr'][idx] >= self.isr_pt_cut
+            isr_pt_cut is None or
+            data['rjrIsr_PtIsr'][idx] >= isr_pt_cut
         )
         passes_risr = data['rjrIsr_RIsr'][idx] >= AnalysisConfig.ISR_RISR_CUT
 
@@ -666,8 +693,10 @@ class DataLoader:
             return passes_pt
         return passes_pt and passes_risr
 
-    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None):
-        """Helper method to extract values for both event flags and custom cuts."""
+    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None,
+                        isr_pt_cut=None):
+        """Helper method to extract values for both event flags and custom cuts.
+        isr_pt_cut: per-region PtISR N-1 threshold; None = self.isr_pt_cut."""
         if luminosity is None:
             luminosity = self.luminosity
         # Initialize storage for all variables
@@ -724,7 +753,7 @@ class DataLoader:
                 if var_config.get('mc_only', False) and is_data:
                     continue
 
-                if not self._passes_compressed_plane_cuts(var_key, data, idx):
+                if not self._passes_compressed_plane_cuts(var_key, data, idx, isr_pt_cut):
                     continue
 
                 if var_key not in extracted_data:

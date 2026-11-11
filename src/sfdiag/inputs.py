@@ -118,12 +118,15 @@ def resolve_config(path):
     flags = ov.get('flags') or []
     rtypes = ov.get('region_types') or [None] * len(flags)
     blinds = ov.get('blind_cuts') or [False] * len(flags)
+    # per-flag 'name:' overrides the production (yields-file) name CustomRegionN
+    names = ov.get('region_names') or [None] * len(flags)
     prod = OrderedDict()
     for i, (cut, rt, bl) in enumerate(zip(flags, rtypes, blinds)):
         kind = classify_region(cut, rt)
         if kind is None or kind in prod:
             continue
-        prod[kind] = {'cut': cut, 'region_type': rt, 'production_name': f"CustomRegion{i + 1}",
+        prod[kind] = {'cut': cut, 'region_type': rt,
+                      'production_name': names[i] if names[i] is not None else f"CustomRegion{i + 1}",
                       'blind': bool(bl) or is_blinded_selection(cut)}
     missing = [k for k in REGION_KINDS if k not in prod]
     if missing:
@@ -405,10 +408,10 @@ class DiagnosticLoader(DataLoader):
             branches.extend(trip)
         return branches
 
-    def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data):
+    def _load_one_file(self, file_path, branches, event_flags, custom_cuts, is_data, **kw):
         self._last_chunk, self._chunk_serial = None, -1
         try:
-            return super()._load_one_file(file_path, branches, event_flags, custom_cuts, is_data)
+            return super()._load_one_file(file_path, branches, event_flags, custom_cuts, is_data, **kw)
         finally:
             self._last_chunk = None
 
@@ -423,8 +426,9 @@ class DiagnosticLoader(DataLoader):
             return np.zeros(len(indices), dtype=bool)
         return np.asarray(data['rjrIsr_nSVisObjects'][indices] > 0, dtype=bool)
 
-    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None):
-        out = super()._extract_values(data, mask, is_data, selected_object_masks, luminosity)
+    def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None,
+                        **kw):
+        out = super()._extract_values(data, mask, is_data, selected_object_masks, luminosity, **kw)
         if data is not self._last_chunk:
             self._last_chunk = data
             self._chunk_serial += 1

@@ -4,7 +4,7 @@ Repair ROOT files whose 2D canvases crash (or show a black canvas) in ROOT 6.24.
 
 Files written by ROOT >= 6.26 store the 2D colour palette (TPaletteAxis)
 without a name; ROOT 6.24 only recognises it by the name 'palette' and
-segfaults painting it. This rewrites every canvas that has an unnamed palette,
+segfaults painting it. This rewrites every canvas that has a palette (naming it "palette"),
 in place (or into a copy with --output).
 
     python tools/fix_palette_names.py 1d_risr_svonly_compressed_v54.root

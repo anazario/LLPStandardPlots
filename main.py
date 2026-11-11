@@ -184,23 +184,27 @@ def _write_palette_setup(f_out):
 
 def name_palettes(pad):
     """
-    Name every unnamed TPaletteAxis in a pad (recursively) 'palette'.
+    Set the name of every TPaletteAxis in a pad (recursively) to 'palette'.
 
-    ROOT >= 6.26 writes the 2D colour palette without a name; ROOT <= 6.24 only
-    recognises it by the name 'palette'. Opened in 6.24, an unnamed palette is
-    painted with no histogram attached and crashes ROOT (black canvas, segfault
-    in THistPainter::PaintFunction). Returns the number of palettes renamed.
+    ROOT >= 6.26 writes the 2D colour palette with an empty stored name; ROOT
+    <= 6.24 only recognises it by the name 'palette'. Opened in 6.24, an unnamed
+    palette is painted with no histogram attached and crashes ROOT (black
+    canvas, segfault in THistPainter::PaintFunction).
+
+    The name is set unconditionally: in 6.26 GetName() already reports
+    'palette' while the stored name is empty, so checking it first skips the
+    very palettes that need fixing. Returns the number of palettes named.
     """
-    renamed = 0
+    named = 0
     for prim in pad.GetListOfPrimitives():
         if prim.InheritsFrom("TPad"):
-            renamed += name_palettes(prim)
+            named += name_palettes(prim)
         elif prim.InheritsFrom("TH1"):
             for func in prim.GetListOfFunctions():
-                if func.InheritsFrom("TPaletteAxis") and not func.GetName():
+                if func.InheritsFrom("TPaletteAxis"):
                     func.SetName("palette")
-                    renamed += 1
-    return renamed
+                    named += 1
+    return named
 
 
 def save_canvas(canvas, output_format, f_out=None, output_dir=None, subdir_path="", canvas_name=None, save_hists=False):
@@ -278,6 +282,64 @@ def _merge_qcd_gjets(bg_data, combine_fn):
     result = {qcd_keys[0]: merged}
     result.update(other)
     return result
+
+def _plan_data_regions(event_flags, custom_cuts, custom_blind_cuts, custom_isr_pt_cuts,
+                       data_flag, flag_crs, flag_isr_pt_cuts):
+    """
+    Decide which event flags / custom cuts to load from data, in loader order.
+
+    The loader names custom regions by position (CustomRegion1..N), so the order is:
+    unblinded custom flag cuts, then the global data_flag, then the per-flag CRs
+    (deduplicated on (cr, isr_pt_cut)). Appending the per-flag CRs last keeps the
+    CustomRegion numbers of everything that existed before them unchanged.
+
+    Returns (data_event_flags, data_custom_cuts, data_custom_isr_pt_cuts,
+             data_flag_key, flag_cr_keys) where flag_cr_keys maps
+    (cr, isr_pt_cut) -> ('event', flag) | ('custom', 'CustomRegionN').
+    """
+    data_event_flags = list(event_flags)
+    data_custom_cuts = [c for c, b in zip(custom_cuts, custom_blind_cuts) if not b]
+    data_custom_isr_pt_cuts = [t for t, b in zip(custom_isr_pt_cuts, custom_blind_cuts) if not b]
+    data_flag_key = None
+    if data_flag:
+        if is_event_flag(data_flag):
+            if data_flag not in data_event_flags:
+                data_event_flags.append(data_flag)
+            data_flag_key = data_flag                                  # key in data_flat_map
+        else:
+            data_custom_cuts.append(data_flag)
+            data_custom_isr_pt_cuts.append(None)
+            data_flag_key = f'CustomRegion{len(data_custom_cuts)}'      # key in custom_data_flat_map
+    flag_cr_keys = {}
+    for cr, pt_cut in zip(flag_crs, flag_isr_pt_cuts):
+        if cr is None or (cr, pt_cut) in flag_cr_keys:
+            continue
+        if is_event_flag(cr):
+            if cr not in data_event_flags:
+                data_event_flags.append(cr)
+            flag_cr_keys[(cr, pt_cut)] = ('event', cr)
+        else:
+            data_custom_cuts.append(cr)
+            data_custom_isr_pt_cuts.append(pt_cut)
+            flag_cr_keys[(cr, pt_cut)] = ('custom', f'CustomRegion{len(data_custom_cuts)}')
+    return data_event_flags, data_custom_cuts, data_custom_isr_pt_cuts, data_flag_key, flag_cr_keys
+
+def _per_flag_settings(args):
+    """(crs, cr_labels, isr_pt_cuts, region_names), each parallel to args.flags;
+    None = use the global setting (region name: the default CustomRegionN)."""
+    n = len(args.flags)
+    out = []
+    for attr in ('flag_crs', 'flag_cr_labels', 'flag_isr_pt_cuts', 'region_names'):
+        vals = getattr(args, attr, None)
+        if vals is None:
+            vals = [None] * n
+        elif len(vals) != n:
+            # --flags on the CLI replaced the YAML flags these settings belong to
+            print(f"Warning: ignoring per-flag YAML settings ({attr}): "
+                  f"{len(vals)} entries for {n} flags")
+            vals = [None] * n
+        out.append(list(vals))
+    return tuple(out)
 
 def _datamc_vars(analysis_mode, region_type, data_source, flag):
     """Variables of the data/MC comparison plots of one region (also the yields-file variables)."""
@@ -430,6 +492,13 @@ def main():
     elif args.isr_pt_cut is not None:
         print(f"Warning: --isr-pt-cut is ignored in uncompressed mode")
 
+    # Per-flag data CR / PtISR threshold from the YAML 'flags' entries (parallel to args.flags).
+    # Absent keys -> [None, ...] -> every flag uses the global data_flag / isr_pt_cut.
+    flag_crs, flag_cr_labels, flag_isr_pt_cuts, region_names = _per_flag_settings(args)
+    if any(c is not None for c in flag_isr_pt_cuts) and analysis_mode != AnalysisMode.COMPRESSED:
+        print("Error: per-flag 'isr_pt_cut' is only supported in compressed mode")
+        sys.exit(1)
+
     # Check for unsupported plot types in compressed mode
     if analysis_mode == AnalysisMode.COMPRESSED:
         if 'unrolled' in args.plots:
@@ -552,10 +621,16 @@ def main():
     print(f"Loading data for {len(event_flags)} event flags and {len(custom_cuts)} custom cuts...")
     
     # Load each category once (background files deduplicated across groups)
-    sig_flat_map, custom_sig_flat_map = loader.load_data_unified(signal_files, event_flags, custom_cuts)
+    # Per-custom-cut PtISR N-1 threshold (None = global isr_pt_cut)
+    custom_flag_indices = [i for i, f in enumerate(args.flags) if not is_event_flag(f)]
+    custom_isr_pt_cuts = [flag_isr_pt_cuts[i] for i in custom_flag_indices]
+
+    sig_flat_map, custom_sig_flat_map = loader.load_data_unified(
+        signal_files, event_flags, custom_cuts, custom_isr_pt_cuts=custom_isr_pt_cuts)
     sig_data_map = assemble_grouped_map(sig_flat_map, signal_groups, loader.combine_data)
     custom_sig_data_map = assemble_grouped_map(custom_sig_flat_map, signal_groups, loader.combine_data)
-    bg_flat_map, custom_bg_flat_map = loader.load_data_unified(all_bg_files, event_flags, custom_cuts)
+    bg_flat_map, custom_bg_flat_map = loader.load_data_unified(
+        all_bg_files, event_flags, custom_cuts, custom_isr_pt_cuts=custom_isr_pt_cuts)
 
     # Load data files if provided.
     # --data-flag can be either an event flag ("pass...") or a custom cut string.
@@ -563,19 +638,15 @@ def main():
     data_flat_map, custom_data_flat_map = {}, {}
     data_flag_is_event = args.data_flag and is_event_flag(args.data_flag)
     data_flag_key = None   # key used to retrieve cr_data_collection later
+    flag_cr_keys = {}      # per-flag CRs: (cr, isr_pt_cut) -> ('event', flag) | ('custom', 'CustomRegionN')
     if all_data_files:
-        data_event_flags = event_flags.copy()
-        data_custom_cuts = [c for c, b in zip(custom_cuts, custom_blind_cuts) if not b]
-        if args.data_flag:
-            if data_flag_is_event:
-                if args.data_flag not in data_event_flags:
-                    data_event_flags.append(args.data_flag)
-                data_flag_key = args.data_flag          # key in data_flat_map
-            else:
-                data_custom_cuts.append(args.data_flag)
-                data_flag_key = f'CustomRegion{len(data_custom_cuts)}'  # key in custom_data_flat_map
+        (data_event_flags, data_custom_cuts, data_custom_isr_pt_cuts,
+         data_flag_key, flag_cr_keys) = _plan_data_regions(
+            event_flags, custom_cuts, custom_blind_cuts, custom_isr_pt_cuts,
+            args.data_flag, flag_crs, flag_isr_pt_cuts)
         data_flat_map, custom_data_flat_map = loader.load_data_unified(
-            all_data_files, data_event_flags, data_custom_cuts, is_data=True
+            all_data_files, data_event_flags, data_custom_cuts, is_data=True,
+            custom_isr_pt_cuts=data_custom_isr_pt_cuts
         )
 
     # Assemble grouped maps (combines files within each group where combine=True)
@@ -633,6 +704,9 @@ def main():
             'data_flat': data_flat_map.get(flag, {}),
             'show_region_label': True,
             'blind_data': not args.unblind and is_blinded_selection(flag),
+            'cr': flag_crs[flag_idx] if flag_idx >= 0 else None,
+            'cr_label': flag_cr_labels[flag_idx] if flag_idx >= 0 else None,
+            'cr_isr_pt_cut': None,
         })
 
     # Add custom cuts
@@ -641,8 +715,11 @@ def main():
     for i, custom_region in enumerate(custom_sig_data_map.keys()):
         original_cut = custom_cuts[i] if i < len(custom_cuts) else "Unknown"
         custom_label = args.labels[i] if args.labels and i < len(args.labels) else None
+        # 'name' is the output name (folder, canvas suffix, yields); 'region_key' the loader's
+        custom_name = region_names[custom_flag_indices[i]] if i < len(custom_flag_indices) else None
         all_flags_and_cuts.append({
-            'name': custom_region,
+            'name': custom_name or custom_region,
+            'region_key': custom_region,
             'data_source': 'custom_cut',
             'region_type': custom_region_types[i] if i < len(custom_region_types) else None,
             'sig_data': custom_sig_data_map.get(custom_region, {}),
@@ -653,6 +730,9 @@ def main():
             'original_cut': original_cut,
             'custom_label': custom_label,
             'blind_data': custom_blind_cuts[i] if i < len(custom_blind_cuts) else False,
+            'cr': flag_crs[custom_flag_indices[i]] if i < len(custom_flag_indices) else None,
+            'cr_label': flag_cr_labels[custom_flag_indices[i]] if i < len(custom_flag_indices) else None,
+            'cr_isr_pt_cut': flag_isr_pt_cuts[custom_flag_indices[i]] if i < len(custom_flag_indices) else None,
         })
     
     # Process all flags and cuts uniformly
@@ -678,7 +758,8 @@ def main():
             current_data_data = data_data_map.get(flag, {})
         else:
             # For custom cuts, use the blind-aware region map to look up data
-            custom_region_idx = list(custom_sig_data_map.keys()).index(flag) if flag in custom_sig_data_map else -1
+            region_key = item['region_key']
+            custom_region_idx = list(custom_sig_data_map.keys()).index(region_key) if region_key in custom_sig_data_map else -1
             data_region_name = custom_cut_data_region_map.get(custom_region_idx)  # None = blinded
             if data_region_name and custom_data_data_map:
                 current_data_data = custom_data_data_map.get(data_region_name, {})
@@ -714,10 +795,22 @@ def main():
         # Data is already assigned above
         current_bg_combined = loader.combine_data(current_bg_data)
 
-        # Retrieve CR data collection for --data-flag (shared by 2D and cr_sig blocks)
+        # Retrieve the CR data collection (shared by 2D and cr_sig blocks):
+        # the flag's own 'cr' if set, otherwise the global --data-flag
         cr_data_collection = {}
-        if all_data_files and args.data_flag:
-            if data_flag_is_event:
+        if item.get('cr') is not None:
+            cr_flag = item['cr']
+            cr_label_override = item.get('cr_label')
+        else:
+            cr_flag = args.data_flag
+            cr_label_override = args.data_flag_label
+        cr_is_event = bool(cr_flag) and is_event_flag(cr_flag)
+        if all_data_files and cr_flag:
+            if item.get('cr') is not None:
+                cr_src, cr_key = flag_cr_keys[(item['cr'], item.get('cr_isr_pt_cut'))]
+                cr_map = data_data_map if cr_src == 'event' else custom_data_data_map
+                cr_data_collection = cr_map.get(cr_key, {})
+            elif data_flag_is_event:
                 cr_data_collection = data_data_map.get(data_flag_key, {})
             else:
                 cr_data_collection = custom_data_data_map.get(data_flag_key, {})
@@ -913,20 +1006,20 @@ def main():
 
                 # Data 2D — two independent sources, each producing its own canvas:
                 # 1. Current flag (CR only): data loaded under the same flag as signal/bg
-                # 2. --data-flag CR collection (if provided and different from current flag)
+                # 2. CR collection (flag's 'cr' or --data-flag; if provided and different from current flag)
                 data_2d_cases = []
                 if current_data_data and not item['blind_data']:
                     data_2d_cases.append((
                         current_data_data, fs_label_latex,
                         f"data_2d_{flag}_{suffix}"
                     ))
-                if cr_data_collection and args.data_flag != flag:
-                    cr_region_label = args.data_flag_label or (
-                        resolver.format_sv_label(args.data_flag)
-                        if data_flag_is_event else f"Region: {args.data_flag}")
+                if cr_data_collection and cr_flag != flag:
+                    cr_region_label = cr_label_override or (
+                        resolver.format_sv_label(cr_flag)
+                        if cr_is_event else f"Region: {cr_flag}")
                     data_2d_cases.append((
                         cr_data_collection, cr_region_label,
-                        f"data_2d_{args.data_flag}_{suffix}"
+                        f"data_2d_{cr_flag}_{suffix}"
                     ))
                 for data_coll, region_label, canvas_name in data_2d_cases:
                     combined = loader.combine_data(data_coll)
@@ -993,17 +1086,17 @@ def main():
                 fs_dir.cd()
 
         # --- CR Data vs SR Signal Plots ---
-        do_cr_sig = ('cr_sig' in args.plots or 'all' in args.plots) and args.data_flag and all_data_files
+        do_cr_sig = ('cr_sig' in args.plots or 'all' in args.plots) and cr_flag and all_data_files
         if do_cr_sig and current_sig_data:
             # cr_data_collection already computed above
             if not cr_data_collection:
-                print(f"  Skipping CR-vs-SR plots: no data events passed '{args.data_flag}'")
+                print(f"  Skipping CR-vs-SR plots: no data events passed '{cr_flag}'")
             else:
-                print(f"  Generating CR Data vs SR Signal Plots (data flag: {args.data_flag})...")
+                print(f"  Generating CR Data vs SR Signal Plots (data flag: {cr_flag})...")
                 cr_sig_subdir = f"{folder_name}/cr_vs_sr_plots"
                 # Use formatted label for named flags, raw cut string for custom cuts
-                cr_label = args.data_flag_label or (
-                    resolver.format_sv_label(args.data_flag) if data_flag_is_event else args.data_flag)
+                cr_label = cr_label_override or (
+                    resolver.format_sv_label(cr_flag) if cr_is_event else cr_flag)
 
                 if use_root_file:
                     cr_sig_dir = fs_dir.mkdir("cr_vs_sr_plots")

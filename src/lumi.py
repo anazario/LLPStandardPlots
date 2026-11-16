@@ -13,10 +13,11 @@ from pathlib import Path
 
 # Integrated luminosity (fb^-1) per data year.
 # Keep in sync with LUMI_FB in LLPCombineJustin/macro/llpcombine.py.
-LUMI_FB = OrderedDict([("16", 36.32), ("17", 42.01), ("18", 59.50),
-                       ("22", 34.12), ("23", 28.27), ("24", 109.82), ("25", 113.67)])
+LUMI_FB = OrderedDict([("16", 36.31375334), ("17", 41.47984914), ("18", 59.83242240),
+                       ("22", 34.74861939), ("23", 28.39726347), ("24", 108.95279750),
+                       ("25", 109.15061210), ("26", 25.79379009)])
 ERA_GROUPS = OrderedDict([("run2", ["16", "17", "18"]),
-                          ("run3", ["22", "23", "24", "25"]),
+                          ("run3", ["22", "23", "24", "25", "26"]),
                           ("all", list(LUMI_FB))])
 RUN_ENERGY = OrderedDict([("run2", "13 TeV"), ("run3", "13.6 TeV")])
 

@@ -437,6 +437,12 @@ def parse_arguments():
     # Input config
     parser.add_argument('--input-config', default=None, metavar='FILE',
                        help='YAML config file specifying input files and optional run parameters')
+    parser.add_argument('--base-dir', default=None, metavar='DIR',
+                       help="Override the config's base_dir for relative file entries "
+                            "(local path or root://host//path)")
+    parser.add_argument('--local-eos', action='store_true', default=False,
+                       help='Read /eos/... files through the local FUSE mount instead of '
+                            'converting them to XRootD (the default)')
 
     # Output Format Options
     parser.add_argument('--format', choices=['root', 'pdf', 'png', 'eps'], default='root',
@@ -459,7 +465,8 @@ def main():
     data_groups = None
     signal_groups = None
     if args.input_config:
-        config = load_input_config(args.input_config)
+        config = load_input_config(args.input_config, base_dir=args.base_dir,
+                                   xrootd=not args.local_eos)
         apply_config_to_args(args, config['overrides'])
         if not args.signal:
             args.signal = config['signal_files']

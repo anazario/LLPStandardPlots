@@ -1,0 +1,61 @@
+# Data/MC comparison in the SV and prompt photon CRs, uncompressed baseline,
+# full Run 2 + Run 3 data 2016-2026 (452 fb^-1) from the v54 skims.
+#   -> datamc_sv_promptpho_uncompressed_v54/CustomRegion{1,2,3}/...
+#
+# Run on cmslpc:  python main.py --input-config config/datamc_sv_promptpho_uncompressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 452.0
+energy: 13+13.6
+analysis_type: uncompressed
+plots: [ratio]
+format: [pdf, root]
+output: datamc_sv_promptpho_uncompressed_v54
+
+flags:
+  # Prompt photon CR:
+  #   nBaseLinePhotons >= 1, SV veto, all baseline photons |WTimeSig| < 2.5,
+  #   BigGuy medium-iso pt-dependent ANN window, barrel (|eta| < 1.479)
+  - cut: "PROMPT_PHO_CR_UNCOMPRESSED_GE1"
+    region_type: pho
+  # SV CRs (same as datamc_sv_uncompressed_v49.yaml)
+  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15)"
+    region_type: sv
+  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500)"
+    region_type: sv
+
+# Signal and background MC: no v54 MC exists yet, so these point to the v49 skims
+# (absolute paths). The R18 MC is scaled to the full 452 fb^-1 by the global lumi.
+signal:
+  - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/SMS_SVHPM100_v34_gogoGZ_FULLMINI_mGl-2500_mN2-1200_mN1-500_ct0p1_rjrskim.root
+
+background:
+  - name: QCD multijets
+    files:
+      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/QCD_R18.root
+  - name: W+jets
+    files:
+      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/WJets_R18.root
+  - name: Z+jets
+    files:
+      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/ZJets_R18.root
+  - name: t#bar{t}+jets
+    files:
+      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/TTJets_R18.root
+  - name: "#gamma+jets"
+    files:
+      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/GJets_R18.root
+
+# Full Run 2 + Run 3, 2016-2026
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

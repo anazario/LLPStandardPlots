@@ -92,20 +92,63 @@ _PARSER_DEFAULTS = {
 }
 
 
-def _expand_globs(patterns, base_dir=None):
-    """Expand a list of path strings / glob patterns to sorted concrete paths."""
+def _is_xrootd(path):
+    return str(path).startswith('root://')
+
+
+# EOS FUSE mount prefix -> (XRootD redirector, path prefix on that server)
+_EOS_XROOTD = (
+    ('/eos/uscms/', 'root://cmseos.fnal.gov/', '/'),           # FNAL LPC: /eos/uscms/store -> //store
+    ('/eos/cms/',   'root://eoscms.cern.ch/',  '/eos/cms/'),   # CERN CMS EOS
+    ('/eos/user/',  'root://eosuser.cern.ch/', '/eos/user/'),  # CERN user EOS
+)
+
+
+def eos_to_xrootd(path):
+    """Map a known /eos/... FUSE path to its root:// URL; other paths are returned unchanged."""
+    path = str(path)
+    for mount, server, remote in _EOS_XROOTD:
+        if path.startswith(mount):
+            return server + remote + path[len(mount):]
+    return path
+
+
+def _expand_xrootd_glob(pattern):
+    """Expand a root://host//path pattern on the remote server (needs fsspec-xrootd)."""
+    import fsspec
+    host_end = pattern.index('/', len('root://'))   # end of 'root://host[:port]'
+    prefix = pattern[:host_end] + '/'
+    fs, _, paths = fsspec.get_fs_token_paths(pattern)
+    if not _glob.has_magic(pattern):
+        paths = [p for p in paths if fs.exists(p)]
+    return [prefix + p if p.startswith('/') else prefix + '/' + p for p in paths]
+
+
+def _expand_globs(patterns, base_dir=None, xrootd=True):
+    """
+    Expand a list of path strings / glob patterns (local or root://) to sorted concrete paths.
+
+    With xrootd=True, /eos/... paths on a known instance are read over XRootD
+    rather than through the FUSE mount.
+    """
     files = []
     for pattern in patterns:
-        if base_dir and not _os.path.isabs(pattern):
+        pattern = str(pattern)
+        if base_dir and not _os.path.isabs(pattern) and not _is_xrootd(pattern):
             pattern = _os.path.join(base_dir, pattern)
-        matches = sorted(_glob.glob(str(pattern)))
+        if xrootd:
+            pattern = eos_to_xrootd(pattern)
+        if _is_xrootd(pattern):
+            matches = sorted(_expand_xrootd_glob(pattern))
+        else:
+            matches = sorted(_glob.glob(pattern))
         if not matches:
             print(f"Warning: no files matched pattern '{pattern}'")
         files.extend(matches)
     return files
 
 
-def _expand_file_entries(raw, base_dir=None, group_era=None):
+def _expand_file_entries(raw, base_dir=None, group_era=None, xrootd=True):
     """
     Expand a group's file entries to (files, eras).
 
@@ -119,14 +162,14 @@ def _expand_file_entries(raw, base_dir=None, group_era=None):
             pattern, era = item['path'], item.get('era', group_era)
         else:
             pattern, era = item, group_era
-        matches = _expand_globs([pattern], base_dir)
+        matches = _expand_globs([pattern], base_dir, xrootd)
         files.extend(matches)
         if era is not None:
             eras.update((f, str(era)) for f in matches)
     return files, eras
 
 
-def _parse_groups(entries, base_dir=None):
+def _parse_groups(entries, base_dir=None, xrootd=True):
     """
     Parse a YAML list of file entries into group dicts:
         {name: str|None, files: [str], combine: bool, scale: float, eras: {file: era}}
@@ -140,7 +183,7 @@ def _parse_groups(entries, base_dir=None):
         if isinstance(entry, str):
             groups.append({
                 'name': None,
-                'files': _expand_globs([entry], base_dir),
+                'files': _expand_globs([entry], base_dir, xrootd),
                 'combine': False,
                 'scale': 1.0,
                 'eras': {},
@@ -150,7 +193,7 @@ def _parse_groups(entries, base_dir=None):
             if isinstance(raw, (str, dict)):
                 raw = [raw]
             name = entry.get('name')
-            files, eras = _expand_file_entries(raw, base_dir, entry.get('era'))
+            files, eras = _expand_file_entries(raw, base_dir, entry.get('era'), xrootd)
             groups.append({
                 'name': name,
                 'files': files,
@@ -219,7 +262,7 @@ def _apply_scale(data_dict, scale):
     return result
 
 
-def load_input_config(yaml_path):
+def load_input_config(yaml_path, base_dir=None, xrootd=True):
     """
     Parse a YAML input config file.
 
@@ -229,21 +272,25 @@ def load_input_config(yaml_path):
       bg_groups     -- list of {name, files, combine, scale, eras} dicts
       data_groups   -- list of {name, files, combine, scale, eras} dicts
       overrides     -- dict of optional CLI-level overrides (lumi, years, energy, …)
+
+    base_dir overrides the config's base_dir. With xrootd=True (default), files
+    under a known /eos/ mount are read via XRootD; False keeps the local paths.
     """
     with open(yaml_path) as f:
         cfg = yaml.safe_load(f)
 
-    base_dir = cfg.get('base_dir', None)
+    if base_dir is None:  # CLI override wins over the config's base_dir
+        base_dir = cfg.get('base_dir', None)
 
     # Signal: supports the same group syntax as background (name, files, scale, combine)
     raw_signal = cfg.get('signal', [])
     if isinstance(raw_signal, str):
         raw_signal = [raw_signal]
-    signal_groups = _parse_groups(raw_signal, base_dir)
+    signal_groups = _parse_groups(raw_signal, base_dir, xrootd)
     signal_files = [f for g in signal_groups for f in g['files']]
 
-    bg_groups = _parse_groups(cfg.get('background', []), base_dir)
-    data_groups = _parse_groups(cfg.get('data', []), base_dir)
+    bg_groups = _parse_groups(cfg.get('background', []), base_dir, xrootd)
+    data_groups = _parse_groups(cfg.get('data', []), base_dir, xrootd)
     global_cuts = _normalize_cut_list(cfg.get('global_cuts', None))
 
     override_keys = (

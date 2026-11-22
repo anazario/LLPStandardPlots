@@ -38,8 +38,12 @@ def expand_input_paths(input_paths):
     expanded_paths = []
     
     for path_str in input_paths:
+        if str(path_str).startswith('root://'):
+            # Remote XRootD file (already glob-expanded); Path() would mangle the '//'
+            expanded_paths.append(str(path_str))
+            continue
         path = Path(path_str)
-        
+
         if path.is_file():
             # Individual file - add as is
             expanded_paths.append(str(path))
@@ -407,7 +411,8 @@ def parse_arguments():
                        default='uncompressed',
                        help='Analysis type: uncompressed (default) or compressed')
     parser.add_argument('--isr-pt-cut', type=float, default=None,
-                       help='Minimum pT(ISR) cut in GeV (compressed mode only). Default: 700 when compressed mode is used.')
+                       help='PtISR baseline cut in GeV, PtISR > cut with the N-1 treatment (compressed mode only). '
+                            'Default: AnalysisConfig.ISR_PT_CUT (300).')
     parser.add_argument('--met-cut', type=float, default=None,
                        help='Override the baseline selCMet cut in GeV (default: 150).')
     parser.add_argument('--workers', type=int, default=1,
@@ -495,7 +500,7 @@ def main():
         if args.isr_pt_cut is not None:
             isr_pt_cut = args.isr_pt_cut
         else:
-            isr_pt_cut = mode_config.get('isr_pt_cut_default', 700.0)
+            isr_pt_cut = mode_config['isr_pt_cut_default']
     elif args.isr_pt_cut is not None:
         print(f"Warning: --isr-pt-cut is ignored in uncompressed mode")
 

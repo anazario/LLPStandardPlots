@@ -36,7 +36,7 @@ A flexible plotting framework for Long-Lived Particle (LLP) analyses, designed t
 | `--plots` | Plot types: `1d`, `2d`, `ratio`, `unrolled`, `cr_sig`, `all` | No | `all` |
 | `--vars` | Variables to plot in 1D/CR-vs-SR mode (must be in `src/config.py`) | No | Mode-dependent |
 | `--analysis-type` | Analysis type: `uncompressed` or `compressed` | No | `uncompressed` |
-| `--isr-pt-cut` | Minimum p_T(ISR) cut in GeV (compressed mode only) | No | `700` |
+| `--isr-pt-cut` | p_T(ISR) baseline cut in GeV, applied N-1 (compressed mode only) | No | `300` |
 | `--met-cut` | Override the baseline `selCMet` cut in GeV | No | `150` |
 | `--output` | Output file (ROOT) or directory (PDF/PNG) | No | `standard_plots.root` |
 | `--format` | Output format: `root`, `pdf`, `png`, `eps` | No | `root` |
@@ -72,7 +72,16 @@ Data/MC plots always include `rjr_Ms`, `rjr_Rs`, `selCMet`, `rjrIsr_RIsr`, and `
 
 ### Baseline selection
 
-Every event must pass `selCMet > 150`, `evtFillWgt < 10`, `Flag_MetFilters == 1`, `Flag_hemVeto == 0`, and the OR of `Trigger_PFMET120_PFMHT120_IDTight`, `Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight`, `Trigger_PFMET120_PFMHT120_IDTight_PFHT60`, and `Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60`, plus `rjrPTS[0] < 150` (uncompressed) or `rjrIsr_nSVisObjects > 0` (compressed). A warning is printed for any file missing one of these branches, since that cut is then not applied.
+Every event must pass `selCMet > 150`, `evtFillWgt < 10`, `Flag_MetFilters == 1`, `Flag_hemVeto == 0`, and the OR of `Trigger_PFMET120_PFMHT120_IDTight`, `Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight`, `Trigger_PFMET120_PFMHT120_IDTight_PFHT60`, and `Trigger_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60`, plus `rjrPTS[0] < 200` (both modes) and `rjrIsr_nSVisObjects > 0` (compressed). A warning is printed for any file missing one of these branches, since that cut is then not applied.
+
+On top of that, the kinematic baseline of the mode (the lowest bin edges of the LLPCombine analysis configs, `src/config.py`) is applied with the **N-1** treatment: each plotted variable gets every kinematic cut except its own.
+
+| Mode | Kinematic cuts | N-1 |
+|------|----------------|-----|
+| `uncompressed` | `rjr_Ms[0] >= 2000`, `rjr_Rs[0] >= 0.15` | M_S plotted with the R_S cut only, R_S with the M_S cut only |
+| `compressed` | `rjrIsr_PtIsr > 300` (`isr_pt_cut`), `rjrIsr_RIsr >= 0.4` | PtISR plotted with the RISR cut only, RISR with the PtISR cut only |
+
+All other variables (MET, SV, photon, ...) get both cuts of the mode. The 2D plane plots are filled without the kinematic cuts. A per-region `isr_pt_cut` in the YAML `flags` replaces the PtISR threshold for that region.
 
 ### Blinding
 

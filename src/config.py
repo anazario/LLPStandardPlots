@@ -3,9 +3,15 @@ class AnalysisConfig:
     
     # Selection Constants
     MET_CUT = 150.0
-    RJR_PTS_CUT = 150.0
-    ISR_RISR_CUT = 0.4
+    RJR_PTS_CUT = 200.0      # rjrPTS[0] < 200, both modes
     EVT_WGT_CUT = 10.0
+
+    # Kinematic baseline (lowest bin edges of the LLPCombine analysis configs), in branch units.
+    # Applied with the N-1 treatment: a variable is plotted without its own cut.
+    MS_CUT = 2000.0          # uncompressed: rjr_Ms[0] >= 2000 GeV
+    RS_CUT = 0.15            # uncompressed: rjr_Rs[0] >= 0.15
+    ISR_PT_CUT = 300.0       # compressed:   rjrIsr_PtIsr > 300 GeV (per-region override possible)
+    ISR_RISR_CUT = 0.4       # compressed:   rjrIsr_RIsr >= 0.4
     
     # Variable Definitions
     # Key: Branch Name (in ROOT tree)
@@ -18,7 +24,6 @@ class AnalysisConfig:
             'range': (0, 10),             # (min, max)
             'scale': 0.001,               # Scale factor (e.g. GeV -> TeV)
             'is_vector': True,            # If it requires the vector loop extraction
-            'cross_cut': ('rjr_Rs', '>', 0.15)   # Require Rs > 0.15 when plotting Ms
         },
         'rjr_Rs': {
             'name': 'rs',
@@ -27,7 +32,6 @@ class AnalysisConfig:
             'range': (0, 1.0),
             'scale': 1.0,
             'is_vector': True,
-            'cross_cut': ('rjr_Ms', '>', 1.0)    # Require Ms > 1 TeV when plotting Rs
         },
         # SV variables for data/MC comparison plots
         'HadronicSV_mass': {
@@ -362,14 +366,52 @@ class ModeConfig:
         'plot_2d_configs': [
             {'x_var': 'rjrIsr_PtIsr', 'y_var': 'rjrIsr_RIsr', 'suffix': 'ptISR_vs_RISR'},
         ],
-        'branches': ['rjrIsr_PtIsr', 'rjrIsr_RIsr', 'rjrIsr_nSVisObjects'],
-        'isr_pt_cut_default': 300.0,
+        'branches': ['rjrIsr_PtIsr', 'rjrIsr_RIsr', 'rjrIsr_nSVisObjects', 'rjrPTS'],
+        'isr_pt_cut_default': AnalysisConfig.ISR_PT_CUT,
     }
 
     @classmethod
     def get(cls, mode):
         """Get configuration for the specified analysis mode."""
         return cls.COMPRESSED if mode == AnalysisMode.COMPRESSED else cls.UNCOMPRESSED
+
+
+def kinematic_cuts(mode, isr_pt_cut=None):
+    """
+    The kinematic baseline of a mode as [(branch, op, threshold)], threshold in plotted
+    units (branch value x VARIABLES[branch]['scale']), as compared by kinematic_pass.
+
+    Every plotted variable gets all of these cuts except the one on itself (N-1).
+    isr_pt_cut overrides the compressed PtISR threshold (None -> AnalysisConfig.ISR_PT_CUT).
+    """
+    V = AnalysisConfig.VARIABLES
+    if mode == AnalysisMode.COMPRESSED:
+        pt = AnalysisConfig.ISR_PT_CUT if isr_pt_cut is None else float(isr_pt_cut)
+        return [('rjrIsr_PtIsr', '>', pt * V['rjrIsr_PtIsr']['scale']),
+                ('rjrIsr_RIsr', '>=', AnalysisConfig.ISR_RISR_CUT * V['rjrIsr_RIsr']['scale'])]
+    return [('rjr_Ms', '>=', AnalysisConfig.MS_CUT * V['rjr_Ms']['scale']),
+            ('rjr_Rs', '>=', AnalysisConfig.RS_CUT * V['rjr_Rs']['scale'])]
+
+
+def kinematic_pass(value, op, threshold):
+    """value <op> threshold; a missing value (None / NaN) fails. Works element-wise on arrays."""
+    import numpy as np
+    if value is None:
+        return False
+    if np.ndim(value) == 0:   # per-event scalar: plain comparison (NaN compares False)
+        return bool(value > threshold) if op == '>' else bool(value >= threshold)
+    value = np.asarray(value, dtype=float)
+    return value > threshold if op == '>' else value >= threshold
+
+
+def describe_kinematic_cuts(mode, isr_pt_cut=None):
+    """Human-readable cut strings in branch units, e.g. 'rjr_Ms[0] >= 2000'."""
+    V = AnalysisConfig.VARIABLES
+    out = []
+    for branch, op, thr in kinematic_cuts(mode, isr_pt_cut):
+        name = f"{branch}[0]" if V[branch]['is_vector'] else branch
+        out.append(f"{name} {op} {thr / V[branch]['scale']:g}")
+    return out
 
 
 def plane_key(x_var, y_var):

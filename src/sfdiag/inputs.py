@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from src.config import AnalysisConfig, AnalysisMode, ModeConfig
+from src.config import AnalysisConfig, AnalysisMode, ModeConfig, kinematic_cuts, kinematic_pass
 from src.input_config import load_input_config, unique_files_from_groups
 from src.loader import DataLoader
 from src.lumi import resolve_run_lumis, detect_years, LumiError
@@ -103,7 +103,7 @@ def resolve_config(path):
     isr_pt_cut = None
     if mode == AnalysisMode.COMPRESSED:
         isr_pt_cut = float(ov['isr_pt_cut']) if ov.get('isr_pt_cut') is not None \
-            else float(mode_cfg.get('isr_pt_cut_default', 700.0))
+            else float(mode_cfg['isr_pt_cut_default'])
 
     bg_groups, data_groups = conf['bg_groups'], conf['data_groups']
     lumi_info = None
@@ -231,8 +231,8 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
     scale of the config at hand.
 
     Steps 0-6 follow DataLoader._load_one_file / _extract_values: MET and weight cuts, the
-    baseline flags and the trigger OR restricted to the branches present in the file, then
-    the mode validation. The order of the steps is for display only (the loader applies them
+    baseline flags and the trigger OR restricted to the branches present in the file, the
+    PTS cut (5b), then the mode validation; the kinematic N-1 cuts are applied to the records. The order of the steps is for display only (the loader applies them
     together). Steps "7 ... approx." are object-count proxies of the regions, NOT the region
     selections; the exact region yields come from the loader records (cutflow steps 8.x).
     """
@@ -330,6 +330,14 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
                     trig |= col(tb) == 1
                 m &= trig
             add("5 MET trigger OR", m, w)
+            # PTS < RJR_PTS_CUT is part of both modes' baseline
+            if 'rjrPTS' in keys:
+                pts0 = (ak.to_numpy(ak.fill_none(ak.firsts(arr['rjrPTS']), np.inf)) if ak else
+                        np.array([c[0] if len(c) else np.inf for c in arr['rjrPTS']]))
+                m &= pts0 < AnalysisConfig.RJR_PTS_CUT
+            else:
+                m &= False
+            add(f"5b PTS < {AnalysisConfig.RJR_PTS_CUT:g}", m, w)
             base = m.copy()
             # compressed mode requirement (the loader also needs the ISR plane branches)
             if all(b in keys for b in ModeConfig.COMPRESSED['branches']):
@@ -340,17 +348,13 @@ def scan_file(path, tree_name, is_data, region_cuts, id_branches):
             # uncompressed mode requirement
             if all(b in keys for b in jagged):
                 if ak:
-                    has = (ak.to_numpy(ak.num(arr['rjr_Ms'])) > 0) & (ak.to_numpy(ak.num(arr['rjr_Rs'])) > 0) \
-                          & (ak.to_numpy(ak.num(arr['rjrPTS'])) > 0)
-                    pts0 = ak.to_numpy(ak.fill_none(ak.firsts(arr['rjrPTS']), np.inf))
+                    has = (ak.to_numpy(ak.num(arr['rjr_Ms'])) > 0) & (ak.to_numpy(ak.num(arr['rjr_Rs'])) > 0)
                 else:
-                    has = np.array([len(a) > 0 and len(b) > 0 and len(c) > 0 for a, b, c in
-                                    zip(arr['rjr_Ms'], arr['rjr_Rs'], arr['rjrPTS'])])
-                    pts0 = np.array([c[0] if len(c) else np.inf for c in arr['rjrPTS']])
-                mu = base & has & (pts0 < AnalysisConfig.RJR_PTS_CUT)
+                    has = np.array([len(a) > 0 and len(b) > 0 for a, b in zip(arr['rjr_Ms'], arr['rjr_Rs'])])
+                mu = base & has
             else:
                 mu = np.zeros(n, dtype=bool)
-            add(f"6 uncompressed: PTS < {AnalysisConfig.RJR_PTS_CUT:g}", mu, w)
+            add("6 uncompressed: M_S, R_S filled", mu, w)
             for tag, mm in (('compressed', mc), ('uncompressed', mu)):
                 nh = col('SV_nHadronic') if 'SV_nHadronic' in keys else np.zeros(n)
                 nl = col('SV_nLeptonic') if 'SV_nLeptonic' in keys else np.zeros(n)
@@ -416,15 +420,8 @@ class DiagnosticLoader(DataLoader):
             self._last_chunk = None
 
     def _validated(self, data, indices):
-        if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
-            if not all(k in data for k in ('rjr_Ms', 'rjr_Rs', 'rjrPTS')):
-                return np.zeros(len(indices), dtype=bool)
-            return np.array([len(data['rjr_Ms'][i]) > 0 and len(data['rjr_Rs'][i]) > 0 and
-                             len(data['rjrPTS'][i]) > 0 and data['rjrPTS'][i][0] < AnalysisConfig.RJR_PTS_CUT
-                             for i in indices], dtype=bool)
-        if not all(k in data for k in ('rjrIsr_PtIsr', 'rjrIsr_RIsr', 'rjrIsr_nSVisObjects')):
-            return np.zeros(len(indices), dtype=bool)
-        return np.asarray(data['rjrIsr_nSVisObjects'][indices] > 0, dtype=bool)
+        """The loader's mode baseline (same method), per event."""
+        return np.array([self._passes_mode_baseline(data, i) for i in indices], dtype=bool)
 
     def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None,
                         **kw):
@@ -474,39 +471,27 @@ def records_of(fdata):
 # --------------------------------------------------------------------------- #
 # Selections on the records                                                   #
 # --------------------------------------------------------------------------- #
+def _kinematic_masks(rec, mode, isr_pt_cut):
+    """{branch: mask} of the loader's kinematic baseline cuts (src.config.kinematic_cuts) on the records."""
+    return {b: kinematic_pass(rec[RECORD_VALUE[b]], op, thr)
+            for b, op, thr in kinematic_cuts(mode, isr_pt_cut)}
+
+
 def common_mask(rec, mode, isr_pt_cut):
     """Events passing the cuts of *every* candidate variable (the common selection)."""
-    if mode == AnalysisMode.UNCOMPRESSED:
-        # every cross cut of the loader (Rs plotted with the Ms cut, Ms with the Rs cut)
-        m = np.ones(len(rec['w']), dtype=bool)
-        for b in ('rjr_Ms', 'rjr_Rs'):
-            other, op, thr = AnalysisConfig.VARIABLES[b]['cross_cut']
-            vals = rec[RECORD_VALUE[other]]
-            m &= vals > thr if op == '>' else vals < thr
-        return m
-    m = rec['risr'] >= AnalysisConfig.ISR_RISR_CUT
-    if isr_pt_cut is not None:
-        m &= rec['ptisr'] >= isr_pt_cut
+    m = np.ones(len(rec['w']), dtype=bool)
+    for mk in _kinematic_masks(rec, mode, isr_pt_cut).values():
+        m &= mk
     return m
 
 
 def native_mask(rec, mode, isr_pt_cut, branch):
-    """The loader's per-variable selection, reproduced on the records (for cross-checks)."""
-    n = len(rec['w'])
-    if mode == AnalysisMode.UNCOMPRESSED:
-        cc = AnalysisConfig.VARIABLES.get(branch, {}).get('cross_cut')
-        if cc:
-            other, op, thr = cc
-            vals = rec[RECORD_VALUE[other]]
-            return vals > thr if op == '>' else vals < thr
-        return np.ones(n, dtype=bool)
-    pt = np.ones(n, dtype=bool) if isr_pt_cut is None else rec['ptisr'] >= isr_pt_cut
-    ri = rec['risr'] >= AnalysisConfig.ISR_RISR_CUT
-    if branch == 'rjrIsr_PtIsr':
-        return ri
-    if branch == 'rjrIsr_RIsr':
-        return pt
-    return pt & ri
+    """The loader's per-variable (N-1) selection, reproduced on the records (for cross-checks)."""
+    m = np.ones(len(rec['w']), dtype=bool)
+    for b, mk in _kinematic_masks(rec, mode, isr_pt_cut).items():
+        if b != branch:
+            m &= mk
+    return m
 
 
 RECORD_VALUE = {'selCMet': 'met', 'rjr_Ms': 'ms', 'rjr_Rs': 'rs', 'rjrIsr_RIsr': 'risr', 'rjrIsr_PtIsr': 'ptisr'}
@@ -870,7 +855,9 @@ def config_fingerprint(acfg, id_branches=None):
         'files': sorted(acfg['files']), 'regions': {r: rc['cut'] for r, rc in acfg['regions'].items()},
         'lumis': {f: m['lumi'] for f, m in acfg['files'].items()}, 'mode': acfg['mode'],
         'isr': acfg['isr_pt_cut'], 'consts': [AnalysisConfig.MET_CUT, AnalysisConfig.EVT_WGT_CUT,
-                                              AnalysisConfig.RJR_PTS_CUT, AnalysisConfig.ISR_RISR_CUT],
+                                              AnalysisConfig.RJR_PTS_CUT, AnalysisConfig.ISR_RISR_CUT,
+                                              AnalysisConfig.MS_CUT, AnalysisConfig.RS_CUT,
+                                              AnalysisConfig.ISR_PT_CUT],
         'mtimes': {f: (Path(f).stat().st_mtime if Path(f).exists() else None) for f in acfg['files']},
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()

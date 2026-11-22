@@ -153,7 +153,8 @@ def replot(yields_path, sf_path=None, out_dir=None, formats=('root',), regions=N
                       f"{n_data / tot_sf if tot_sf else 0:>8.3f} "
                       f"{c_nom:>7.1f}/{d_nom:<5d} {c_sf:>7.1f}/{d_sf:<5d}")
             else:
-                print(f"{region:<16} {var:<24} {'blinded':>10} {tot_nom:>11.1f} {tot_sf:>11.1f}")
+                tag = 'blinded' if reg.get('blind') else 'no data'
+                print(f"{region:<16} {var:<24} {tag:>10} {tot_nom:>11.1f} {tot_sf:>11.1f}")
 
             if table_only:
                 continue
@@ -167,6 +168,11 @@ def replot(yields_path, sf_path=None, out_dir=None, formats=('root',), regions=N
                 h.SetFillColor(plotter._get_background_color_index(proc))
                 h.SetStats(0)
                 mc_histograms.append((h, plotter._clean_mc_label(parse_background_name(proc))))
+            if not mc_histograms:
+                # same as the nominal pass: nothing to stack (e.g. leptonic-SV variables
+                # in a hadronic-SV region with no events having both)
+                print(f"  Warning: no MC entries for '{var}' in {region}; skipping the plot.")
+                continue
             if data:
                 data.SetLineColor(ROOT.kBlack)
                 data.SetMarkerStyle(20)

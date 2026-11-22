@@ -12,7 +12,8 @@ except ImportError:
         def __exit__(self, *a): pass
         def update(self, n=1): pass
 from src.selections import SelectionManager
-from src.config import AnalysisConfig, AnalysisMode, ModeConfig, plane_key
+from src.config import (AnalysisConfig, AnalysisMode, ModeConfig, plane_key,
+                        kinematic_cuts, kinematic_pass, describe_kinematic_cuts)
 
 
 
@@ -118,13 +119,11 @@ class DataLoader:
         baseline_cuts.append("(" + " || ".join(self.selection_manager.hlt_triggers) + ")")
 
         # Add mode-specific cuts
-        if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
-            baseline_cuts.append("rjrPTS < 150")
-        elif self.analysis_mode == AnalysisMode.COMPRESSED:
+        baseline_cuts.append(f"rjrPTS[0] < {AnalysisConfig.RJR_PTS_CUT:.0f}")
+        if self.analysis_mode == AnalysisMode.COMPRESSED:
             baseline_cuts.append("rjrIsr_nSVisObjects > 0")
-            if self.isr_pt_cut is not None:
-                baseline_cuts.append(f"per-variable PtISR N-1 cut >= {self.isr_pt_cut:.0f}")
-            baseline_cuts.append(f"per-variable RISR N-1 cut >= {AnalysisConfig.ISR_RISR_CUT:.1f}")
+        baseline_cuts.extend(f"{c} (N-1)" for c in
+                             describe_kinematic_cuts(self.analysis_mode, self.isr_pt_cut))
 
         print(f"    • Baseline cuts: {', '.join(baseline_cuts)}")
 
@@ -133,7 +132,7 @@ class DataLoader:
         if self.loading_summary['custom_cuts']:
             print(f"    • Custom cuts: {', '.join(sorted(self.loading_summary['custom_cuts']))}")
         for cut, pt_cut in self.loading_summary.get('custom_isr_pt_cuts', []):
-            print(f"    • PtISR N-1 cut >= {pt_cut:.0f} (per-region override) for: {cut}")
+            print(f"    • PtISR N-1 cut > {pt_cut:.0f} (per-region override) for: {cut}")
         print("=" * 60)
 
     def load_data_unified(self, file_paths, event_flags, custom_cuts, is_data=False,
@@ -665,33 +664,34 @@ class DataLoader:
             raw = raw[0]
         return raw * AnalysisConfig.VARIABLES[var_key]['scale']
 
-    def _passes_compressed_plane_cuts(self, var_key, data, idx, isr_pt_cut=None):
+    def _kinematic_flags(self, data, idx, isr_pt_cut=None):
         """
-        Apply compressed PtISR/RISR cuts per plotted variable.
+        {branch: passes} for each kinematic baseline cut of the mode (src.config.kinematic_cuts).
 
-        PtISR is plotted with the RISR cut only, RISR is plotted with the PtISR
-        cut only, and all other variables get both plane cuts.
+        A variable is filled only if it passes every cut but the one on itself (N-1):
+        M_S is plotted with the R_S cut only and vice versa (PtISR / RISR likewise in
+        compressed mode); all other variables get every cut.
         isr_pt_cut overrides self.isr_pt_cut for this region (None = use self.isr_pt_cut).
         """
         if isr_pt_cut is None:
             isr_pt_cut = self.isr_pt_cut
-        if self.analysis_mode != AnalysisMode.COMPRESSED:
-            return True
+        return {branch: kinematic_pass(self._event_scalar(data, branch, idx), op, thr)
+                for branch, op, thr in kinematic_cuts(self.analysis_mode, isr_pt_cut)}
 
-        if 'rjrIsr_PtIsr' not in data or 'rjrIsr_RIsr' not in data:
+    @staticmethod
+    def _passes_n_minus_1(var_key, kin_flags):
+        return all(ok for branch, ok in kin_flags.items() if branch != var_key)
+
+    def _passes_mode_baseline(self, data, idx):
+        """rjrPTS[0] < RJR_PTS_CUT (both modes), plus the mode's object requirements."""
+        if 'rjrPTS' not in data or len(data['rjrPTS'][idx]) == 0 or \
+                not data['rjrPTS'][idx][0] < AnalysisConfig.RJR_PTS_CUT:
             return False
-
-        passes_pt = (
-            isr_pt_cut is None or
-            data['rjrIsr_PtIsr'][idx] >= isr_pt_cut
-        )
-        passes_risr = data['rjrIsr_RIsr'][idx] >= AnalysisConfig.ISR_RISR_CUT
-
-        if var_key == 'rjrIsr_PtIsr':
-            return passes_risr
-        if var_key == 'rjrIsr_RIsr':
-            return passes_pt
-        return passes_pt and passes_risr
+        if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
+            return ('rjr_Ms' in data and 'rjr_Rs' in data and
+                    len(data['rjr_Ms'][idx]) > 0 and len(data['rjr_Rs'][idx]) > 0)
+        return bool('rjrIsr_PtIsr' in data and 'rjrIsr_RIsr' in data and
+                    'rjrIsr_nSVisObjects' in data and data['rjrIsr_nSVisObjects'][idx] > 0)
 
     def _extract_values(self, data, mask, is_data=False, selected_object_masks=None, luminosity=None,
                         isr_pt_cut=None):
@@ -707,27 +707,11 @@ class DataLoader:
                        for c in ModeConfig.get(self.analysis_mode)['plot_2d_configs']]
 
         for idx in indices:
-            # Mode-specific validation
-            passes_validation = False
-
-            if self.analysis_mode == AnalysisMode.UNCOMPRESSED:
-                # Uncompressed mode: require rjr_Ms, rjr_Rs, and rjrPTS < 150
-                if ('rjr_Ms' in data and 'rjr_Rs' in data and 'rjrPTS' in data and
-                    len(data['rjr_Ms'][idx]) > 0 and
-                    len(data['rjr_Rs'][idx]) > 0 and
-                    len(data['rjrPTS'][idx]) > 0 and
-                    data['rjrPTS'][idx][0] < AnalysisConfig.RJR_PTS_CUT):
-                    passes_validation = True
-            else:
-                # Compressed mode: require ISR plane variables and nSVisObjects.
-                # PtISR/RISR cuts are applied per plotted variable for N-1 behavior.
-                if ('rjrIsr_PtIsr' in data and 'rjrIsr_RIsr' in data and
-                        'rjrIsr_nSVisObjects' in data):
-                    passes_nsv = data['rjrIsr_nSVisObjects'][idx] > 0
-                    passes_validation = passes_nsv
-
-            if not passes_validation:
+            # Mode baseline (PTS, object requirements); the kinematic cuts are applied
+            # per plotted variable below (N-1).
+            if not self._passes_mode_baseline(data, idx):
                 continue
+            kin_flags = self._kinematic_flags(data, idx, isr_pt_cut)
 
             # Get base event weight
             base_weight = 1.0 if is_data else data['evtFillWgt'][idx] * luminosity
@@ -753,7 +737,7 @@ class DataLoader:
                 if var_config.get('mc_only', False) and is_data:
                     continue
 
-                if not self._passes_compressed_plane_cuts(var_key, data, idx, isr_pt_cut):
+                if not self._passes_n_minus_1(var_key, kin_flags):
                     continue
 
                 if var_key not in extracted_data:
@@ -766,17 +750,6 @@ class DataLoader:
                     if len(data[var_key][idx]) > 0:
                         raw_val = data[var_key][idx][0]
                         scaled_val = raw_val * var_config['scale']
-
-                        # Apply cross-cut on the paired RJR variable if defined
-                        cross_cut = var_config.get('cross_cut')
-                        if cross_cut:
-                            other_branch, op, threshold = cross_cut
-                            other_scale = AnalysisConfig.VARIABLES[other_branch]['scale']
-                            if (other_branch in data and len(data[other_branch][idx]) > 0):
-                                other_val = data[other_branch][idx][0] * other_scale
-                                if not (other_val > threshold if op == '>' else other_val < threshold):
-                                    continue
-
                         extracted_data[var_key].append(scaled_val)
                         extracted_data[f'{var_key}_weights'].append(base_weight)
 

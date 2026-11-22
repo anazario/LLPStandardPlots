@@ -392,7 +392,9 @@ def main(argv=None):
                                            for f, m in c['files'].items()}}
                   for c in cfgs},
         baseline={'MET_CUT': AnalysisConfig.MET_CUT, 'EVT_WGT_CUT': AnalysisConfig.EVT_WGT_CUT,
-                  'RJR_PTS_CUT': AnalysisConfig.RJR_PTS_CUT, 'ISR_RISR_CUT': AnalysisConfig.ISR_RISR_CUT},
+                  'RJR_PTS_CUT': AnalysisConfig.RJR_PTS_CUT, 'ISR_RISR_CUT': AnalysisConfig.ISR_RISR_CUT,
+                  'ISR_PT_CUT': AnalysisConfig.ISR_PT_CUT, 'MS_CUT': AnalysisConfig.MS_CUT,
+                  'RS_CUT': AnalysisConfig.RS_CUT},
         fit={'sf_bounds': [__import__('fit_sfs').SF_MIN, __import__('fit_sfs').SF_MAX], 'mc_stat': 'Barlow-Beeston lite',
              'min_mc': 0.0},
         thresholds=OrderedDict((k, v) for k, v in st.THRESHOLDS.items()),

@@ -1,13 +1,19 @@
-# Data/MC comparison in the SV and prompt photon CRs, uncompressed baseline,
-# full Run 2 + Run 3 data 2016-2026 (452 fb^-1) from the v54 skims.
-#   -> datamc_sv_promptpho_uncompressed_v54/CustomRegion{1,2,3}/...
+# Data/MC comparison in the SV and prompt photon CRs, uncompressed (high-dm) baseline,
+# full Run 2 + Run 3 data 2016-2026 from the v54 skims, v54 Run 2 + Run 3 MC.
+#   -> datamc_sv_promptpho_uncompressed_v54/<region>/...          nominal plots
+#   -> datamc_sv_promptpho_uncompressed_v54_sf/<region>/...       same plots with the fitted MC SFs
 #
-# Run on cmslpc:  python main.py --input-config config/datamc_sv_promptpho_uncompressed_v54.yaml --workers 8
+# Baseline (src/config.py): MET > 150, rjrPTS[0] < 200, plus the kinematic N-1 cuts
+# rjr_Ms[0] >= 2000 and rjr_Rs[0] >= 0.15 (lowest bin edges of the BigGuy configs):
+# the Ms plot has the Rs cut only, the Rs plot the Ms cut only, all others both.
+#
+# Run on cmslpc:  python main.py --input-config config/datamc_sv_promptpho_uncompressed_v54.yaml --workers 8 --local-eos
 
 base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
 
-lumi: 452.0
-energy: 13+13.6
+# No `lumi:` -> each MC file is scaled by the luminosity of its own run (src/lumi.py):
+# Run 2 MC (RunIISummer20UL18) -> 2016-18, Run 3 MC (Run3Summer23[BPix]) -> 2022-26.
+years: all
 analysis_type: uncompressed
 plots: [ratio]
 format: [pdf, root]
@@ -19,35 +25,54 @@ flags:
   #   BigGuy medium-iso pt-dependent ANN window, barrel (|eta| < 1.479)
   - cut: "PROMPT_PHO_CR_UNCOMPRESSED_GE1"
     region_type: pho
-  # SV CRs (same as datamc_sv_uncompressed_v49.yaml)
-  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15)"
+    name: PromptPho
+  # SV CRs, photon veto keeps them disjoint from the photon CR
+  - cut: "(SV_nHadronic >= 1) & (HadronicSV_dxySig < 800) & (HadronicSV_mass > 15) & (nBaseLinePhotons == 0)"
     region_type: sv
-  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500)"
+    name: HadSV
+  - cut: "(SV_nLeptonic >= 1) & (LeptonicSV_dxySig < 500) & (nBaseLinePhotons == 0)"
     region_type: sv
+    name: LepSV
 
-# Signal and background MC: no v54 MC exists yet, so these point to the v49 skims
-# (absolute paths). The R18 MC is scaled to the full 452 fb^-1 by the global lumi.
+# MC scale-factor fit (see README). One data pass writes the nominal plots, the yields,
+# the SFs and the replot with the SFs. Iterate on the fit alone (seconds) with:
+#   python fit_sfs.py --config config/datamc_sv_promptpho_uncompressed_v54.yaml
+sf_fit:
+  # The two SV regions can share events (hadronic + leptonic SV); fitted per region.
+  channels: [PromptPho:rs, HadSV:rs, LepSV:rs]
+  per_era: ["QCD multijets"]        # "all" for separate Run 2 / Run 3 SFs for every process
+  per_region: true                  # the regions have very different selections: fit each on its own
+  # fix: {"t#bar{t}+jets": 1.0}     # tt+jets is Run 2 only (no Run 3 sample)
+  replot: true
+
+# Ratio plots do not draw signal; it only has to load.
 signal:
-  - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/SMS_SVHPM100_v34_gogoGZ_FULLMINI_mGl-2500_mN2-1200_mN1-500_ct0p1_rjrskim.root
+  - gogoGZ_mGl-2500_mN2-1200_mN1-500_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
 
 background:
   - name: QCD multijets
     files:
-      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/QCD_R18.root
+      - QCD_HT*_RunIISummer20UL18__SVIPM100_v34__rjrskim.root
+      - QCD-4Jets_HT-*_Run3Summer23BPix__SVIPM100_v34__rjrskim.root
   - name: W+jets
     files:
-      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/WJets_R18.root
+      - WJetsToLNu_HT-*_RunIISummer20UL18__SVIPM100_v34__rjrskim.root
+      - WtoLNu-4Jets_MLNu-*_Rn3Sm23__SVHPM100_v34__rjrskim.root
   - name: Z+jets
     files:
-      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/ZJets_R18.root
+      - ZJetsToNuNu_HT-*_RunIISummer20UL18__SVIPM100_v34__rjrskim.root
+      - Zto2Nu-4Jets_HT-*_Run3Summer23__SVIPM100_v34__rjrskim.root
+  # Run 2 only: no Run 3 sample (not enough statistics to justify it)
   - name: t#bar{t}+jets
     files:
-      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/TTJets_R18.root
+      - TTJets_RunIISummer20UL18__SVIPM100_v34__rjrskim.root
+  # HT-binned only: GJ-4Jets-2NLO2LO_PTG-120_Bias_* overlaps these and is left out
   - name: "#gamma+jets"
     files:
-      - /eos/uscms/store/group/lpcsusylep/anazario/LLPSkims/skims_v49/background/GJets_R18.root
+      - GJets_HT-*_RunIISummer20UL18__SVHPM100_v2_v34__rjrskim.root
+      - GJ-4Jets_HT-*_Run3Summer23__SVHPM100_v34__rjrskim.root
 
-# Full Run 2 + Run 3, 2016-2026
+# Full Run 2 + Run 3, 2016-2026 (2026 = Run2026B + D, the certified eras)
 data:
   - name: Run 2+3
     combine: true

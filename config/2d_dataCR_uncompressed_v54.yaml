@@ -1,0 +1,108 @@
+# High-dm counterpart of 2d_dataCR_compressed_v49_NoMC.yaml: Ms vs Rs over the full plane,
+# data in the CR and signal in the SR, no MC. One CR flag (data, unblinded) and one SR flag
+# (signal, blind) per channel of LLPCombine/config_master/BigGuy_NonCompressed_FullRegions_AnalysisConfig.yaml;
+# the cuts are those of 1d_ms_rs_crdata_vs_sig_uncompressed_v54.yaml.
+# Output:
+#   2d_dataCR_uncompressed_v54/<name>_CR/2D_plots/data_2d_<name>_CR_Ms_vs_Rs.pdf
+#   2d_dataCR_uncompressed_v54/<name>_SR/2D_plots/sig_2d_<signal>_<name>_SR_Ms_vs_Rs.pdf
+#   <name> = GeLep | GeHad | MixDel | DelPho | Eq1Pho | Eq2Pho
+#
+# The 2D planes are filled without the kin (Ms >= 2 TeV, Rs >= 0.15) N-1 cuts, and no Ms/Rs
+# cut is written below, so the plots cover the full plane. rjrPTS < 200, MET, triggers,
+# MET filters and the HEM veto come from main.py's baseline.
+#
+# Run on cmslpc:  python main.py --input-config config/2d_dataCR_uncompressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+years: all            # header lumi = sum of all years in src/lumi.py
+energy: 13+13.6
+analysis_type: uncompressed
+plots: [2d]
+format: pdf
+output: 2d_dataCR_uncompressed_v54
+
+flags:
+  # -- Ch1 GeLep CR (leptonic SV, low dxySig) / Ch2 SR (high dxySig) --
+  - cut: "(passNLepGe1SelectionLowDxySigCR == 1)"
+    region_type: sv
+    label: "CR: #geq 1 SV_{lep}"
+    name: GeLep_CR
+  - cut: "(passNLepGe1SelectionHighDxySigSR == 1)"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{lep}"
+    name: GeLep_SR
+
+  # -- Ch3 GeHad CR / Ch4 SR (hadronic SV, no nonprompt photons) --
+  - cut: "(passNHadGe1SelectionLowDxySigCR == 1) & (nblNonpromptPhotons == 0)"
+    region_type: sv
+    label: "CR: #geq 1 SV_{had}"
+    name: GeHad_CR
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (nblNonpromptPhotons == 0)"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{had}"
+    name: GeHad_SR
+
+  # -- Ch13 MixDel CR / Ch14 SR (hadronic SV + late notBH photon) --
+  - cut: "(passNHadGe1SelectionLowDxySigCR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    region_type: sv
+    label: "CR: SV_{had} + #gamma^{late}"
+    name: MixDel_CR
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    region_type: sv
+    blind: true
+    label: "SR: SV_{had} + #gamma^{late}"
+    name: MixDel_SR
+
+  # -- Ch7 DelPho CR (0 SV + early notBH photon) / Ch8 SR (late notBH tight-iso photon) --
+  - cut: "(passNSVEq0Selection == 1) & (passNPhoGe1SelectionEarlyNotBHCR == 1)"
+    region_type: pho
+    label: "CR: 0 SV + #gamma^{early}_{notBH}"
+    name: DelPho_CR
+  - cut: "(passNSVEq0Selection == 1) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + #gamma^{late}_{notBH}"
+    name: DelPho_SR
+
+  # -- Ch9 Eq1Pho CR (med iso) / Ch10 SR (tight iso); 0 SV, balanced RJR jets --
+  - cut: "(passNSVEq0Selection == 1) & ((lead(rjrNJetsJa) >= 3) & (lead(rjrNJetsJb) >= 2) | (lead(rjrNJetsJa) >= 2) & (lead(rjrNJetsJb) >= 3)) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq1SelectionPromptMedIsoCR == 1)"
+    region_type: pho
+    label: "CR: 0 SV + 1#gamma^{med iso}"
+    name: Eq1Pho_CR
+  - cut: "(passNSVEq0Selection == 1) & ((lead(rjrNJetsJa) >= 3) & (lead(rjrNJetsJb) >= 2) | (lead(rjrNJetsJa) >= 2) & (lead(rjrNJetsJb) >= 3)) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq1SelectionPromptTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 1#gamma^{tight iso}"
+    name: Eq1Pho_SR
+
+  # -- Ch11 Eq2Pho CR (med iso) / Ch12 SR (tight iso); 0 SV --
+  - cut: "(passNSVEq0Selection == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq2SelectionPromptMedIsoCR == 1)"
+    region_type: pho
+    label: "CR: 0 SV + 2#gamma^{med iso}"
+    name: Eq2Pho_CR
+  - cut: "(passNSVEq0Selection == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq2SelectionPromptTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 2#gamma^{tight iso}"
+    name: Eq2Pho_SR
+
+# v38 high-dm signal MC (same points as the other uncompressed v54 configs).
+signal:
+  - gogoGZ_mGl-2500_mN2-1200_mN1-500_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-1600_mN1-500_ct0p5__SVHPM100_FullMini_v38__rjrskim.root
+
+# Full Run 2 + Run 3, 2016-2026 (444.67 fb^-1)
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

@@ -19,7 +19,7 @@ years: all            # header lumi = sum of all years in src/lumi.py
 energy: 13+13.6
 analysis_type: uncompressed
 plots: [2d]
-format: pdf
+format: [pdf,root]
 output: 2d_dataCR_uncompressed_v54
 
 flags:

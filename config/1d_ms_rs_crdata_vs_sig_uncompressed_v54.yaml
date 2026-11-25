@@ -86,6 +86,7 @@ flags:
 signal:
   - gogoGZ_mGl-2500_mN2-1200_mN1-500_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
   - gogoGZ_mGl-2300_mN2-1600_mN1-500_ct0p5__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-1300_mN1-1000_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
 
 # Full Run 2 + Run 3, 2016-2026 (444.67 fb^-1)
 data:

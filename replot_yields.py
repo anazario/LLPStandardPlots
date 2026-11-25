@@ -113,7 +113,9 @@ def replot(yields_path, sf_path=None, out_dir=None, formats=('root',), regions=N
     else:
         lumi = meta.get('lumi') or 0.0
         energy_label = meta.get('energy_label')
-    style = StyleManager(luminosity=round(lumi), energy=meta.get('energy', 13.6), energy_label=energy_label)
+    sel_run_lumis = {e: run_lumis[e] for e in (eras or run_lumis) if e in run_lumis}
+    style = StyleManager(luminosity=round(lumi), energy=meta.get('energy', 13.6), energy_label=energy_label,
+                         run_lumis=sel_run_lumis)
     style.set_style()
     plotter = PlotterDataMC(style)
 

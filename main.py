@@ -592,7 +592,8 @@ def main():
         print_lumi_table(lumi_info)
         args.lumi = lumi_info['total']
         style = StyleManager(luminosity=round(lumi_info['total']), energy=args.energy,
-                             energy_label=lumi_info['energy_label'])
+                             energy_label=lumi_info['energy_label'],
+                             run_lumis=lumi_info['run_lumis'])
     else:
         style = StyleManager(luminosity=args.lumi, energy=args.energy, energy_label=energy_label)
     style.set_style()

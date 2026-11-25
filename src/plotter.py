@@ -743,8 +743,7 @@ class Plotter2D(PlotterBase):
         st = self.style
         gap = 0.015
         prelim_end = st.prelim_x_pos + self._ndc_text_width(canvas, prelim_str, 52, st.prelim_text_size)
-        lumi_value = f"{st.luminosity:g}" if st.luminosity == int(st.luminosity) else f"{st.luminosity}"
-        lumi_text = f"{lumi_value} fb^{{-1}} ({st.energy_label or f'{st.energy} TeV'})"
+        lumi_text = st.lumi_text()
         lumi_start = st.lumi_x_pos - self._ndc_text_width(canvas, lumi_text, 42, st.lumi_text_size)
         width = self._ndc_text_width(canvas, label, 42, st.sample_label_size)
         if prelim_end + gap + width <= lumi_start - gap:

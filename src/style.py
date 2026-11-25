@@ -31,11 +31,14 @@ def parse_energy(spec):
 class StyleManager:
     """Manages CMS plotting style configuration."""
     
-    def __init__(self, luminosity=400, energy=13, energy_label=None):
+    def __init__(self, luminosity=400, energy=13, energy_label=None, run_lumis=None):
         self.luminosity = luminosity
         self.energy = energy
         # Overrides "<energy> TeV" in the header, e.g. "13 TeV + 13.6 TeV"
         self.energy_label = energy_label
+        # Per-run luminosities {run: fb^-1} (src/lumi.py); with more than one run the
+        # header reads e.g. "138 fb^{-1} (13 TeV) + 307 fb^{-1} (13.6 TeV)"
+        self.run_lumis = run_lumis
         self.color_palette = ROOT.kViridis
         
         # Text sizes and positions (consistent with original script)
@@ -226,10 +229,17 @@ class StyleManager:
         lumi_label.SetTextSize(self.lumi_text_size * cms_text_size_mult)
         lumi_label.SetTextFont(42)
         lumi_label.SetTextAlign(31)  # Right-aligned
+        lumi_label.DrawLatex(lumi_x, lumi_y, self.lumi_text())
+
+    def lumi_text(self):
+        """Header luminosity text: one term per run when several runs are used."""
+        from src.lumi import RUN_ENERGY
+        runs = [(r, l) for r, l in (self.run_lumis or {}).items() if l > 0]
+        if len(runs) > 1:
+            return " + ".join(f"{round(l)} fb^{{-1}} ({RUN_ENERGY[r]})" for r, l in runs)
         # Format luminosity without decimal if it's a whole number
-        lumi_text = f"{self.luminosity:g}" if self.luminosity == int(self.luminosity) else f"{self.luminosity}"
-        energy_text = self.energy_label or f"{self.energy} TeV"
-        lumi_label.DrawLatex(lumi_x, lumi_y, f"{lumi_text} fb^{{-1}} ({energy_text})")
+        lumi = f"{self.luminosity:g}" if self.luminosity == int(self.luminosity) else f"{self.luminosity}"
+        return f"{lumi} fb^{{-1}} ({self.energy_label or f'{self.energy} TeV'})"
 
     def draw_process_label(self, label_text, x_pos=0.65, y_pos=0.85, align=11):
         """Draw the process/sample label on the plot."""

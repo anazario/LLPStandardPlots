@@ -1,0 +1,55 @@
+# High-dm counterpart of 2d_signal_compressed_v38.yaml: signal Ms vs Rs over the full plane,
+# one plot per signal point per channel (the SRs of 1d_ms_rs_crdata_vs_sig_uncompressed_v54.yaml).
+# Signal only (blind, no data), so it runs fast. Output:
+#   2d_signal_uncompressed_v38/<name>/2D_plots/sig_2d_<signal>_<name>_Ms_vs_Rs.pdf
+#
+# The 2D planes are filled without the kin (Ms >= 2 TeV, Rs >= 0.15) N-1 cuts, and no Ms/Rs
+# cut is written below, so the plot covers the full plane. rjrPTS < 200, MET, triggers and
+# filters come from main.py's baseline.
+#
+# Run on cmslpc:  python main.py --input-config config/2d_signal_uncompressed_v38.yaml
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51
+energy: 13+13.6       # Run 2 + Run 3 -> header (13 + 13.6 TeV)
+analysis_type: uncompressed
+plots: [2d]
+format: pdf
+output: 2d_signal_uncompressed_v38
+
+flags:
+  - cut: "(passNLepGe1SelectionHighDxySigSR == 1)"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{lep}"
+    name: GeLep
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (nblNonpromptPhotons == 0)"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{had}"
+    name: GeHad
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    region_type: sv
+    blind: true
+    label: "SR: SV_{had} + #gamma^{late}"
+    name: MixDel
+  - cut: "(passNSVEq0Selection == 1) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + #gamma^{late}_{notBH}"
+    name: DelPho
+  - cut: "(passNSVEq0Selection == 1) & ((lead(rjrNJetsJa) >= 3) & (lead(rjrNJetsJb) >= 2) | (lead(rjrNJetsJa) >= 2) & (lead(rjrNJetsJb) >= 3)) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq1SelectionPromptTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 1#gamma^{tight iso}"
+    name: Eq1Pho
+  - cut: "(passNSVEq0Selection == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq2SelectionPromptTightIsoSR == 1)"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 2#gamma^{tight iso}"
+    name: Eq2Pho
+
+signal:
+  - gogoGZ_mGl-2500_mN2-1200_mN1-500_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-1600_mN1-500_ct0p5__SVHPM100_FullMini_v38__rjrskim.root

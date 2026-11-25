@@ -1,0 +1,101 @@
+# 1D Ms and Rs, data CR vs signal-MC SR in the same plot, for the 6 SR/CR channel pairs of
+# LLPCombine/config_master/BigGuy_NonCompressed_FullRegions_AnalysisConfig.yaml (high-dm).
+# Full kinematic range per channel: the common 'kin' cut (Ms >= 2 TeV, Rs >= 0.15), no Ms/Rs bin.
+#   -> 1d_ms_rs_crdata_vs_sig_uncompressed_v54/<name>/cr_vs_sr_plots/cr_vs_sr_{ms,rs}_<name>.pdf
+#   <name> = GeLep | GeHad | MixDel | DelPho | Eq1Pho | Eq2Pho
+#
+# Each flag carries its own data CR ('cr'). The loader's N-1 logic plots Ms with only
+# Rs >= 0.15 and Rs with only Ms >= 2 TeV, so 'kin' is not written in the cut strings.
+# MET, triggers, MET filters, the HEM veto and rjrPTS < 200 come from main.py's baseline.
+# Both curves are unit-normalized.
+#
+# Run on cmslpc:  python main.py --input-config config/1d_ms_rs_crdata_vs_sig_uncompressed_v54.yaml --workers 8
+
+base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
+
+lumi: 449.51          # plots are unit-normalized; this only sets the header
+energy: 13+13.6
+analysis_type: uncompressed
+plots: [cr_sig]
+vars: [rjr_Ms, rjr_Rs]
+binning_1d:           # start at the kin thresholds (Ms in TeV)
+  rjr_Ms: [32, 2.0, 10.0]
+  rjr_Rs: [34, 0.15, 1.0]
+format: [pdf, root]
+output: 1d_ms_rs_crdata_vs_sig_uncompressed_v54
+
+flags:
+  # -- Ch2 GeLep SR (leptonic SV, high dxySig) vs Ch1 CR (low dxySig) --
+  - cut: "(passNLepGe1SelectionHighDxySigSR == 1)"
+    cr: "(passNLepGe1SelectionLowDxySigCR == 1)"
+    cr_label: "Data, SV_{lep}^{CR}"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{lep}"
+    name: GeLep
+
+  # -- Ch4 GeHad SR (hadronic SV, high dxySig, no nonprompt photons) vs Ch3 CR --
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (nblNonpromptPhotons == 0)"
+    cr: "(passNHadGe1SelectionLowDxySigCR == 1) & (nblNonpromptPhotons == 0)"
+    cr_label: "Data, SV_{had}^{CR}"
+    region_type: sv
+    blind: true
+    label: "SR: #geq 1 SV_{had}"
+    name: GeHad
+
+  # -- Ch14 MixDel SR (hadronic SV high dxySig + late notBH photon) vs Ch13 CR (low dxySig) --
+  - cut: "(passNHadGe1SelectionHighDxySigSR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    cr: "(passNHadGe1SelectionLowDxySigCR == 1) & (passNPhoGe1SelectionLateSignal == 1)"
+    cr_label: "Data, SV_{had}^{CR} + #gamma^{late}"
+    region_type: sv
+    blind: true
+    label: "SR: SV_{had} + #gamma^{late}"
+    name: MixDel
+
+  # -- Ch8 DelPho SR (0 SV + late notBH tight-iso photon) vs Ch7 CR (early notBH) --
+  # Same CR choice as the compressed config. Alternatives in the master config:
+  # passNPhoGe1Selection{Early,Late}BeamHaloCR (Ch5/6), {Early,Late}MedIsoCR (Ch15/16), EarlyTightIsoCR (Ch17).
+  - cut: "(passNSVEq0Selection == 1) & (passNPhoGe1SelectionLateNotBHTightIsoSR == 1)"
+    cr: "(passNSVEq0Selection == 1) & (passNPhoGe1SelectionEarlyNotBHCR == 1)"
+    cr_label: "Data, 0 SV + #gamma^{early}_{notBH}"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + #gamma^{late}_{notBH}"
+    name: DelPho
+
+  # -- Ch10 Eq1Pho SR (0 SV + 1 prompt tight-iso photon, balanced RJR jets) vs Ch9 CR (med iso) --
+  - cut: "(passNSVEq0Selection == 1) & ((lead(rjrNJetsJa) >= 3) & (lead(rjrNJetsJb) >= 2) | (lead(rjrNJetsJa) >= 2) & (lead(rjrNJetsJb) >= 3)) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq1SelectionPromptTightIsoSR == 1)"
+    cr: "(passNSVEq0Selection == 1) & ((lead(rjrNJetsJa) >= 3) & (lead(rjrNJetsJb) >= 2) | (lead(rjrNJetsJa) >= 2) & (lead(rjrNJetsJb) >= 3)) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq1SelectionPromptMedIsoCR == 1)"
+    cr_label: "Data, 0 SV + 1#gamma^{med iso}"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 1#gamma^{tight iso}"
+    name: Eq1Pho
+
+  # -- Ch12 Eq2Pho SR (0 SV + 2 prompt tight-iso photons) vs Ch11 CR (med iso) --
+  - cut: "(passNSVEq0Selection == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq2SelectionPromptTightIsoSR == 1)"
+    cr: "(passNSVEq0Selection == 1) & (nblBHPhotons == 0) & (nblNonpromptPhotons == 0) & (passNPhoEq2SelectionPromptMedIsoCR == 1)"
+    cr_label: "Data, 0 SV + 2#gamma^{med iso}"
+    region_type: pho
+    blind: true
+    label: "SR: 0 SV + 2#gamma^{tight iso}"
+    name: Eq2Pho
+
+# v38 high-dm signal MC (the points already used by the other uncompressed v54 configs).
+# Relative paths resolve against base_dir.
+signal:
+  - gogoGZ_mGl-2500_mN2-1200_mN1-500_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
+  - gogoGZ_mGl-2300_mN2-1600_mN1-500_ct0p5__SVHPM100_FullMini_v38__rjrskim.root
+
+# Full Run 2 + Run 3, 2016-2026 (449.51 fb^-1)
+data:
+  - name: Run 2+3
+    combine: true
+    files:
+      - MET_Run201[678]*__llpCombineSkim.root
+      - JetMET_Run2022*__llpCombineSkim.root
+      - PixSeedFix_JetMET[01]_Run2023*__llpCombineSkim.root
+      - JetMET[01]_Run2024*__llpCombineSkim.root
+      - JetMET[01]_Run2025*__llpCombineSkim.root
+      - kucmsntuple_JetMET_R25_*__llpCombineSkim.root
+      - JetMET[01]_Run2026*__llpCombineSkim.root

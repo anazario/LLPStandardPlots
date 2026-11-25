@@ -15,7 +15,7 @@
 
 base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
 
-lumi: 449.51          # plots are unit-normalized; this only sets the header
+years: all            # header lumi = sum of all years in src/lumi.py
 energy: 13+13.6
 analysis_type: compressed
 isr_pt_cut: 300       # global fallback only; every flag below sets its own
@@ -86,7 +86,7 @@ signal:
   - gogoGZ_mGl-2300_mN2-2200_mN1-2100_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
   - gogoGZ_mGl-2300_mN2-2200_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
 
-# Full Run 2 + Run 3, 2016-2026 (449.51 fb^-1)
+# Full Run 2 + Run 3, 2016-2026 (444.67 fb^-1)
 data:
   - name: Run 2+3
     combine: true

@@ -11,7 +11,7 @@
 
 base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
 
-lumi: 449.51
+years: all            # header lumi = sum of all years in src/lumi.py
 energy: 13+13.6       # Run 2 + Run 3 -> header (13 + 13.6 TeV)
 analysis_type: uncompressed
 plots: [2d]

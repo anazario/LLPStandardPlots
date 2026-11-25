@@ -12,7 +12,7 @@
 
 base_dir: /eos/uscms/store/group/lpcsusylep/malazaro/KUCMSSkims/skims_v54/
 
-lumi: 449.51          # plots are unit-normalized; this only sets the header
+years: all            # header lumi = sum of all years in src/lumi.py
 energy: 13+13.6
 analysis_type: compressed
 isr_pt_cut: 500       # kinSV floor (main.py default is 700)
@@ -61,7 +61,7 @@ signal:
   - gogoGZ_mGl-2300_mN2-2200_mN1-2100_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
   - gogoGZ_mGl-2300_mN2-2200_mN1-2150_ct0p1__SVHPM100_FullMini_v38__rjrskim.root
 
-# Full Run 2 + Run 3, 2016-2026 (449.51 fb^-1). Only the
+# Full Run 2 + Run 3, 2016-2026 (444.67 fb^-1). Only the
 # *_testRjrskimBranchMask_v54.root test copy of 2017B is left out (duplicate).
 data:
   - name: Run 2+3

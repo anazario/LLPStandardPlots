@@ -113,6 +113,23 @@ def eos_to_xrootd(path):
     return path
 
 
+_xrootd_glob_ok = None
+
+
+def _xrootd_glob_available():
+    """True if fsspec-xrootd is importable; warns once and returns False otherwise."""
+    global _xrootd_glob_ok
+    if _xrootd_glob_ok is None:
+        try:
+            import fsspec_xrootd  # noqa: F401
+            _xrootd_glob_ok = True
+        except ImportError:
+            _xrootd_glob_ok = False
+            print("Warning: fsspec-xrootd not installed; reading /eos/... files through "
+                  "the FUSE mount instead of XRootD (same as --local-eos).")
+    return _xrootd_glob_ok
+
+
 def _expand_xrootd_glob(pattern):
     """Expand a root://host//path pattern on the remote server (needs fsspec-xrootd)."""
     import fsspec
@@ -136,7 +153,7 @@ def _expand_globs(patterns, base_dir=None, xrootd=True):
         pattern = str(pattern)
         if base_dir and not _os.path.isabs(pattern) and not _is_xrootd(pattern):
             pattern = _os.path.join(base_dir, pattern)
-        if xrootd:
+        if xrootd and eos_to_xrootd(pattern) != pattern and _xrootd_glob_available():
             pattern = eos_to_xrootd(pattern)
         if _is_xrootd(pattern):
             matches = sorted(_expand_xrootd_glob(pattern))
